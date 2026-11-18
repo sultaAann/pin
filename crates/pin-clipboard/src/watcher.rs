@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -12,12 +14,26 @@ pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
 pub struct Watcher {
     clipboard: Clipboard,
     last: ChangeCount,
+    ignored: Arc<AtomicIsize>,
 }
 
 impl Watcher {
     pub fn new(clipboard: Clipboard) -> Self {
+        Self::with_ignored(clipboard, Arc::new(AtomicIsize::new(isize::MIN)))
+    }
+
+    fn with_ignored(clipboard: Clipboard, ignored: Arc<AtomicIsize>) -> Self {
         let last = clipboard.change_count();
-        Self { clipboard, last }
+        Self {
+            clipboard,
+            last,
+            ignored,
+        }
+    }
+
+    /// Skips the copy with this change count, typically pin's own write.
+    pub fn ignore(&self, count: ChangeCount) {
+        self.ignored.store(count.0, Ordering::Relaxed);
     }
 
     pub fn poll(&mut self) -> Option<Capture> {
@@ -26,6 +42,9 @@ impl Watcher {
             return None;
         }
         self.last = now;
+        if now.0 == self.ignored.load(Ordering::Relaxed) {
+            return None;
+        }
         Some(self.clipboard.read())
     }
 }
@@ -35,9 +54,15 @@ impl Watcher {
 pub struct WatchHandle {
     stop: Option<Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    ignored: Arc<AtomicIsize>,
 }
 
 impl WatchHandle {
+    /// Skips the copy with this change count, typically pin's own write.
+    pub fn ignore(&self, count: ChangeCount) {
+        self.ignored.store(count.0, Ordering::Relaxed);
+    }
+
     pub fn is_running(&self) -> bool {
         self.thread
             .as_ref()
@@ -74,12 +99,14 @@ where
 {
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<()>>(1);
+    let ignored = Arc::new(AtomicIsize::new(isize::MIN));
+    let shared = Arc::clone(&ignored);
     // The pasteboard object is not Send, so it is created on the thread that polls it.
     let thread = thread::Builder::new()
         .name("pin-clipboard".into())
         .spawn(move || {
             let mut watcher = match Clipboard::general() {
-                Ok(clipboard) => Watcher::new(clipboard),
+                Ok(clipboard) => Watcher::with_ignored(clipboard, shared),
                 Err(err) => {
                     _ = ready_tx.send(Err(err));
                     return;
@@ -100,6 +127,7 @@ where
     let handle = WatchHandle {
         stop: Some(stop_tx),
         thread: Some(thread),
+        ignored,
     };
     ready_rx.recv().map_err(|_| Error::WatcherStopped)??;
     Ok(handle)
@@ -123,5 +151,21 @@ mod tests {
             .unwrap();
         assert!(matches!(watcher.poll(), Some(Capture::Entry(_))));
         assert_eq!(watcher.poll(), None);
+    }
+
+    #[test]
+    fn ignored_change_is_not_captured() {
+        let clipboard = Clipboard::unique();
+        let writer = Clipboard::named(&clipboard);
+        let mut watcher = Watcher::new(clipboard);
+        let own = writer
+            .write(&[Format::new(FormatKind::Text, "own")], Privacy::Normal)
+            .unwrap();
+        watcher.ignore(own);
+        assert_eq!(watcher.poll(), None);
+        writer
+            .write(&[Format::new(FormatKind::Text, "next")], Privacy::Normal)
+            .unwrap();
+        assert!(matches!(watcher.poll(), Some(Capture::Entry(_))));
     }
 }
