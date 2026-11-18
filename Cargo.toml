@@ -11,12 +11,16 @@ publish = false
 
 [workspace.dependencies]
 pin-core = { path = "crates/pin-core" }
+pin-clipboard = { path = "crates/pin-clipboard" }
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 blake3 = "1.8"
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 eframe = "0.37"
 getrandom = "0.4"
 keyring-core = "1"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSBitmapImageRep", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString"] }
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 windows-native-keyring-store = { version = "1", default-features = false }
 dbus-secret-service-keyring-store = { version = "1", features = ["vendored", "crypto-openssl"] }
