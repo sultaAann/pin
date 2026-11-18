@@ -26,7 +26,9 @@ Before finishing a change: fmt, clippy with `-D warnings`, tests must pass.
 ## Design decisions
 
 - Content types: everything the OS clipboard carries — plain text, rich text/HTML, images, file lists. Store all representations of one copy event as one entry with several formats.
-- Storage: SQLite. Everything on disk is encrypted; plaintext never touches disk (no temp files, no unencrypted caches or thumbnails).
+- Storage: SQLCipher (rusqlite `bundled-sqlcipher`; CommonCrypto on macOS, vendored OpenSSL elsewhere), raw 32-byte key, WAL, `secure_delete = ON`, `temp_store = MEMORY`. Plaintext never touches disk (no temp files, no unencrypted caches or thumbnails). Write paths use IMMEDIATE transactions because pin-app and pin-cli share the database.
+- Search: FTS5 trigram over plain text or decoded file paths (first 64 KiB) for queries of 3+ chars; 1–2 char queries scan previews with Unicode case folding.
+- Ordering: pinned first, then `use_seq` (monotonic counter bumped on copy/paste), not wall-clock time.
 - Key: random data key generated on first run, stored in the OS keychain (`keyring`: Keychain / Secret Service / Credential Manager).
 - Secrets: separate vault, encrypted with a key derived from a master password (Argon2id). Secrets are never put into the search index, history list, logs or the CLI output unless explicitly unlocked. Zeroize key material and decrypted secrets after use.
 - Pins: pinned entries are exempt from history limits and sorted on top; a pin can have a paste hotkey.
@@ -41,6 +43,10 @@ pin runs all the time, so idle cost matters more than peak speed.
 - Load large payloads (images, files) lazily; the list shows previews/thumbnails, full data is decrypted only on use.
 - Search must stay interactive on 10k+ entries; avoid decrypting the whole history per keystroke.
 - Release profile: thin LTO, `codegen-units = 1`, stripped.
+
+## Git
+
+- No Linear for this repo: do not use Linear tools; branch names are `type/short-name` without a task key.
 
 ## Code rules
 
