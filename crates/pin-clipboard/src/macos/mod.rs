@@ -49,6 +49,16 @@ impl Clipboard {
         Ok(self.change_count())
     }
 
+    /// Empties the clipboard unless something was copied after `count`; returns whether it did.
+    pub fn clear_if_unchanged(&self, count: ChangeCount) -> bool {
+        if self.change_count() != count {
+            return false;
+        }
+        // NSPasteboard has no atomic check-and-clear; a copy landing in this gap is lost.
+        self.board.clearContents();
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn unique() -> Self {
         Self {

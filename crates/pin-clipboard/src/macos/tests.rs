@@ -183,6 +183,55 @@ fn unknown_types_only_give_an_empty_capture() {
 }
 
 #[test]
+fn single_image_file_link_also_stores_the_picture() {
+    let dir = std::env::temp_dir().join(format!("pin-clip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("photo.png");
+    std::fs::write(&path, TINY_PNG).unwrap();
+    let url = format!("file://{}\r\n", path.display());
+    let clipboard = Clipboard::unique();
+    clipboard.board.clearContents();
+    assert!(clipboard.board.setData_forType(
+        Some(&NSData::with_bytes(url.trim_end().as_bytes())),
+        &NSString::from_str(FILE_URL)
+    ));
+    let formats = entry(clipboard.read());
+    assert_eq!(kinds(&formats), [FormatKind::Png, FormatKind::Files]);
+    assert_eq!(formats[0].data, TINY_PNG);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn file_links_to_non_images_store_only_the_link() {
+    let clipboard = Clipboard::unique();
+    clipboard
+        .write(
+            &[Format::new(FormatKind::Files, "file:///etc/hosts\r\n")],
+            Privacy::Normal,
+        )
+        .unwrap();
+    assert_eq!(kinds(&entry(clipboard.read())), [FormatKind::Files]);
+}
+
+#[test]
+fn clear_only_removes_the_expected_copy() {
+    let clipboard = Clipboard::unique();
+    let secret = clipboard
+        .write(
+            &[Format::new(FormatKind::Text, "s3cret")],
+            Privacy::Concealed,
+        )
+        .unwrap();
+    let newer = clipboard
+        .write(&[Format::new(FormatKind::Text, "later")], Privacy::Normal)
+        .unwrap();
+    assert!(!clipboard.clear_if_unchanged(secret));
+    assert!(matches!(clipboard.read(), Capture::Entry(_)));
+    assert!(clipboard.clear_if_unchanged(newer));
+    assert_eq!(clipboard.read(), Capture::Empty);
+}
+
+#[test]
 fn writes_without_supported_formats_are_rejected() {
     let clipboard = Clipboard::unique();
     let other = Format::new(FormatKind::Other("x/y".into()), "z");

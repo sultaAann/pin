@@ -25,6 +25,10 @@ impl Clipboard {
         match self.never {}
     }
 
+    pub fn clear_if_unchanged(&self, _count: ChangeCount) -> bool {
+        match self.never {}
+    }
+
     pub fn write(&self, _formats: &[Format], _privacy: Privacy) -> Result<ChangeCount> {
         match self.never {}
     }
