@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use zeroize::Zeroize;
 
 use crate::model::{Format, FormatKind};
@@ -21,12 +23,16 @@ pub(crate) fn hash(formats: &[Format]) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
     for format in formats {
         let kind = format.kind.as_str().as_bytes();
-        hasher.update(&(kind.len() as u64).to_le_bytes());
+        hasher.update(&len_u64(kind.len()).to_le_bytes());
         hasher.update(kind);
-        hasher.update(&(format.data.len() as u64).to_le_bytes());
+        hasher.update(&len_u64(format.data.len()).to_le_bytes());
         hasher.update(&format.data);
     }
     hasher.finalize()
+}
+
+fn len_u64(len: usize) -> u64 {
+    u64::try_from(len).unwrap_or(u64::MAX)
 }
 
 pub(crate) fn primary_kind(formats: &[Format]) -> FormatKind {
@@ -44,31 +50,40 @@ pub(crate) fn primary_kind(formats: &[Format]) -> FormatKind {
         .unwrap_or(FormatKind::Text)
 }
 
-pub(crate) fn search_text(formats: &[Format]) -> Option<String> {
-    let text = if let Some(text) = find(formats, &FormatKind::Text) {
-        String::from_utf8_lossy(truncate_bytes(text, MAX_INDEXED_BYTES)).into_owned()
-    } else {
-        files_text(find(formats, &FormatKind::Files)?)
+pub(crate) fn search_text(formats: &[Format]) -> Option<Cow<'_, str>> {
+    let text = match find(formats, &FormatKind::Text) {
+        Some(text) => String::from_utf8_lossy(truncate_bytes(text, MAX_INDEXED_BYTES)),
+        None => Cow::Owned(files_text(find(formats, &FormatKind::Files)?)),
     };
     (!text.trim().is_empty()).then_some(text)
 }
 
 fn files_text(data: &[u8]) -> String {
-    let list = String::from_utf8_lossy(data);
-    file_uris(&list)
-        .map(|uri| percent_decode(uri.strip_prefix("file://").unwrap_or(uri)))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let list = String::from_utf8_lossy(truncate_bytes(data, MAX_INDEXED_BYTES));
+    let mut out = Vec::new();
+    for (index, uri) in file_uris(&list).enumerate() {
+        if index > 0 {
+            out.push(b'\n');
+        }
+        percent_decode_into(&mut out, uri.strip_prefix("file://").unwrap_or(uri));
+    }
+    into_string_lossy(out)
+}
+
+fn into_string_lossy(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 pub(crate) fn preview(formats: &[Format], kind: &FormatKind) -> String {
     match kind {
         FormatKind::Png => "Image".to_owned(),
         FormatKind::Files => files_preview(find(formats, kind).unwrap_or_default()),
-        _ => find(formats, &FormatKind::Text)
-            .map(text_preview)
-            .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| kind.as_str().to_owned()),
+        FormatKind::Text | FormatKind::Html | FormatKind::Rtf | FormatKind::Other(_) => {
+            find(formats, &FormatKind::Text)
+                .map(text_preview)
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| kind.as_str().to_owned())
+        }
     }
 }
 
@@ -132,8 +147,13 @@ fn file_uris(list: &str) -> impl Iterator<Item = &str> {
 }
 
 fn percent_decode(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    percent_decode_into(&mut out, s);
+    into_string_lossy(out)
+}
+
+fn percent_decode_into(out: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         let hex = bytes
@@ -151,11 +171,12 @@ fn percent_decode(s: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -228,5 +249,31 @@ mod tests {
             Format::new(FormatKind::Png, [0u8]),
         ];
         assert_eq!(primary_kind(&formats), FormatKind::Png);
+    }
+
+    proptest! {
+        #[test]
+        fn truncate_bytes_keeps_valid_utf8_within_limit(s in ".*", max in 0usize..64) {
+            let cut = truncate_bytes(s.as_bytes(), max);
+            prop_assert!(cut.len() <= max);
+            prop_assert!(std::str::from_utf8(cut).is_ok());
+        }
+
+        #[test]
+        fn text_preview_is_bounded_and_trimmed(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+            let preview = text_preview(&data);
+            prop_assert!(preview.chars().count() <= PREVIEW_CHARS);
+            prop_assert!(!preview.starts_with(char::is_whitespace));
+        }
+
+        #[test]
+        fn percent_decode_never_panics(s in ".*") {
+            let _ = percent_decode(&s);
+        }
+
+        #[test]
+        fn files_text_never_panics(data in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let _ = files_text(&data);
+        }
     }
 }

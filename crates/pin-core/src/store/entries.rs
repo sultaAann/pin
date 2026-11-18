@@ -1,9 +1,20 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::{ENTRY_COLUMNS, Store, entry_from_row, expect_row, next_seq, prune, to_i64, write_tx};
+use super::{Store, entry_from_row, expect_row, next_seq, prune, to_i64, write_tx};
 use crate::content;
 use crate::error::{Error, Result};
-use crate::model::{Entry, EntryId, Format, FormatKind, NewEntry, Timestamp};
+use crate::model::{Entry, EntryId, Format, NewEntry, Timestamp};
+
+const GET_SQL: &str = concat!(
+    "SELECT ",
+    entry_columns!(),
+    " FROM entries e WHERE e.id = ?1"
+);
+const RECENT_SQL: &str = concat!(
+    "SELECT ",
+    entry_columns!(),
+    " FROM entries e ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?1 OFFSET ?2"
+);
 
 impl Store {
     pub fn insert(&mut self, new: NewEntry) -> Result<EntryId> {
@@ -12,66 +23,56 @@ impl Store {
             return Err(Error::Empty);
         }
         let hash = content::hash(&formats);
-        let now = Timestamp::now().as_millis();
+        let now = Timestamp::now();
         let tx = write_tx(&mut self.conn)?;
         let seq = next_seq(&tx)?;
 
-        let existing: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM entries WHERE hash = ?1",
-                [&hash.as_bytes()[..]],
-                |row| row.get(0),
-            )
+        let existing: Option<EntryId> = tx
+            .prepare_cached("SELECT id FROM entries WHERE hash = ?1")?
+            .query_row([&hash.as_bytes()[..]], |row| row.get(0))
             .optional()?;
         if let Some(id) = existing {
-            tx.execute(
-                "UPDATE entries SET last_used_at = ?2, use_seq = ?3 WHERE id = ?1",
-                params![id, now, seq],
-            )?;
+            tx.prepare_cached("UPDATE entries SET last_used_at = ?2, use_seq = ?3 WHERE id = ?1")?
+                .execute(params![id, now, seq])?;
             tx.commit()?;
-            return Ok(EntryId(id));
+            return Ok(id);
         }
 
         let kind = content::primary_kind(&formats);
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO entries (hash, kind, preview, source_app, size, created_at, last_used_at, use_seq)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
-            params![
-                &hash.as_bytes()[..],
-                kind.as_str(),
-                content::preview(&formats, &kind),
-                new.source_app,
-                to_i64(content::size(&formats)),
-                now,
-                seq,
-            ],
-        )?;
-        let id = tx.last_insert_rowid();
+        )?
+        .execute(params![
+            &hash.as_bytes()[..],
+            kind,
+            content::preview(&formats, &kind),
+            new.source_app,
+            to_i64(content::size(&formats)),
+            now,
+            seq,
+        ])?;
+        let id = EntryId(tx.last_insert_rowid());
         {
-            let mut stmt =
-                tx.prepare("INSERT INTO formats (entry_id, kind, data) VALUES (?1, ?2, ?3)")?;
+            let mut stmt = tx
+                .prepare_cached("INSERT INTO formats (entry_id, kind, data) VALUES (?1, ?2, ?3)")?;
             for format in &formats {
-                stmt.execute(params![id, format.kind.as_str(), format.data])?;
+                stmt.execute(params![id, format.kind, format.data])?;
             }
         }
         if let Some(text) = content::search_text(&formats) {
-            tx.execute(
-                "INSERT INTO entries_fts (rowid, text) VALUES (?1, ?2)",
-                params![id, text],
-            )?;
+            tx.prepare_cached("INSERT INTO entries_fts (rowid, text) VALUES (?1, ?2)")?
+                .execute(params![id, text])?;
         }
         prune(&tx, self.options.history_limit)?;
         tx.commit()?;
-        Ok(EntryId(id))
+        Ok(id)
     }
 
     pub fn get(&self, id: EntryId) -> Result<Entry> {
         self.conn
-            .query_row(
-                &format!("SELECT {ENTRY_COLUMNS} FROM entries e WHERE e.id = ?1"),
-                [id.0],
-                entry_from_row,
-            )
+            .prepare_cached(GET_SQL)?
+            .query_row([id], entry_from_row)
             .optional()?
             .ok_or(Error::NotFound(id))
     }
@@ -81,10 +82,7 @@ impl Store {
     }
 
     pub fn recent(&self, limit: usize, offset: usize) -> Result<Vec<Entry>> {
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT {ENTRY_COLUMNS} FROM entries e
-             ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?1 OFFSET ?2"
-        ))?;
+        let mut stmt = self.conn.prepare_cached(RECENT_SQL)?;
         let entries = stmt
             .query_map([to_i64(limit), to_i64(offset)], entry_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -94,10 +92,9 @@ impl Store {
     pub fn touch(&mut self, id: EntryId) -> Result<()> {
         let tx = write_tx(&mut self.conn)?;
         let seq = next_seq(&tx)?;
-        let changed = tx.execute(
-            "UPDATE entries SET last_used_at = ?2, use_seq = ?3 WHERE id = ?1",
-            params![id.0, Timestamp::now().as_millis(), seq],
-        )?;
+        let changed = tx
+            .prepare_cached("UPDATE entries SET last_used_at = ?2, use_seq = ?3 WHERE id = ?1")?
+            .execute(params![id, Timestamp::now(), seq])?;
         expect_row(id, changed)?;
         tx.commit()?;
         Ok(())
@@ -123,19 +120,17 @@ pub(crate) fn load_formats(conn: &Connection, id: EntryId) -> Result<Vec<Format>
     let mut stmt =
         conn.prepare_cached("SELECT kind, data FROM formats WHERE entry_id = ?1 ORDER BY kind")?;
     let formats = stmt
-        .query_map([id.0], |row| {
+        .query_map([id], |row| {
             Ok(Format {
-                kind: FormatKind::parse(&row.get::<_, String>(0)?),
+                kind: row.get(0)?,
                 data: row.get(1)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if formats.is_empty() {
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM entries WHERE id = ?1)",
-            [id.0],
-            |row| row.get(0),
-        )?;
+        let exists: bool = conn
+            .prepare_cached("SELECT EXISTS (SELECT 1 FROM entries WHERE id = ?1)")?
+            .query_row([id], |row| row.get(0))?;
         if !exists {
             return Err(Error::NotFound(id));
         }
@@ -144,6 +139,6 @@ pub(crate) fn load_formats(conn: &Connection, id: EntryId) -> Result<Vec<Format>
 }
 
 pub(crate) fn delete_entry(conn: &Connection, id: EntryId) -> Result<()> {
-    let changed = conn.execute("DELETE FROM entries WHERE id = ?1", [id.0])?;
+    let changed = conn.execute("DELETE FROM entries WHERE id = ?1", [id])?;
     expect_row(id, changed)
 }

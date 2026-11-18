@@ -64,6 +64,8 @@ CREATE INDEX secret_formats_secret ON secret_formats (secret_id);
 -- must not leave it readable with the database key alone.
 INSERT INTO entries_fts (entries_fts, rank) VALUES ('secure-delete', 1);
 INSERT INTO entries_fts (entries_fts) VALUES ('optimize');
+
+CREATE INDEX entries_seq ON entries (use_seq);
 ",
 ];
 
@@ -84,6 +86,7 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<()> {
     }
     tx.pragma_update(None, "user_version", supported)?;
     tx.commit()?;
+    tracing::info!(from = found, to = supported, "applied schema migrations");
     Ok(())
 }
 

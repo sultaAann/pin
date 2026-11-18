@@ -1,5 +1,6 @@
 mod codec;
 mod crypto;
+mod model;
 mod recovery;
 mod secrets;
 mod session;
@@ -12,6 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
+pub use model::{NewSecret, Secret, SecretId, SecretLabel};
 pub use recovery::RecoveryKey;
 pub(crate) use session::Session;
 
@@ -80,6 +82,14 @@ pub struct Vault<'a> {
     conn: &'a mut Connection,
     session: &'a mut Option<Session>,
     options: VaultOptions,
+}
+
+impl fmt::Debug for Vault<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Vault")
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Vault<'a> {

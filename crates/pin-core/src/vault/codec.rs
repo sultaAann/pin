@@ -2,10 +2,10 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-const LEN_PREFIX: usize = 8;
+const LEN_PREFIX: usize = size_of::<u64>();
 
 // Sized up front: a growing Vec would free reallocated buffers holding plaintext without wiping them.
-pub(crate) fn encode(fields: &[&[u8]]) -> Zeroizing<Vec<u8>> {
+pub(super) fn encode(fields: &[&[u8]]) -> Zeroizing<Vec<u8>> {
     let total = fields.iter().map(|f| LEN_PREFIX + f.len()).sum();
     let mut out = Zeroizing::new(Vec::with_capacity(total));
     for field in fields {
@@ -16,14 +16,14 @@ pub(crate) fn encode(fields: &[&[u8]]) -> Zeroizing<Vec<u8>> {
     out
 }
 
-pub(crate) struct Reader<'a>(&'a [u8]);
+pub(super) struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
-    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+    pub(super) fn new(bytes: &'a [u8]) -> Self {
         Self(bytes)
     }
 
-    pub(crate) fn take(&mut self) -> Result<&'a [u8]> {
+    pub(super) fn take(&mut self) -> Result<&'a [u8]> {
         let (len, rest) = self
             .0
             .split_first_chunk::<LEN_PREFIX>()
@@ -34,16 +34,16 @@ impl<'a> Reader<'a> {
         Ok(field)
     }
 
-    pub(crate) fn take_str(&mut self) -> Result<&'a str> {
+    pub(super) fn take_str(&mut self) -> Result<&'a str> {
         std::str::from_utf8(self.take()?).map_err(|_| Error::Corrupt)
     }
 
-    pub(crate) fn take_u64(&mut self) -> Result<u64> {
-        let bytes: [u8; 8] = self.take()?.try_into().map_err(|_| Error::Corrupt)?;
+    pub(super) fn take_u64(&mut self) -> Result<u64> {
+        let bytes: [u8; LEN_PREFIX] = self.take()?.try_into().map_err(|_| Error::Corrupt)?;
         Ok(u64::from_le_bytes(bytes))
     }
 
-    pub(crate) fn finish(self) -> Result<()> {
+    pub(super) fn finish(self) -> Result<()> {
         if self.0.is_empty() {
             Ok(())
         } else {
@@ -54,7 +54,7 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    use proptest::prelude::*;
 
     use super::*;
 
@@ -75,5 +75,27 @@ mod tests {
         let mut huge = u64::MAX.to_le_bytes().to_vec();
         huge.push(1);
         assert!(Reader::new(&huge).take().is_err());
+    }
+
+    proptest! {
+        #[test]
+        fn reader_never_panics_on_arbitrary_bytes(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let mut reader = Reader::new(&bytes);
+            let _ = reader.take_u64();
+            let _ = reader.take_str();
+            let _ = reader.take();
+            let _ = reader.finish();
+        }
+
+        #[test]
+        fn encoded_fields_read_back(fields in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..32), 0..6)) {
+            let refs: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();
+            let bytes = encode(&refs);
+            let mut reader = Reader::new(&bytes);
+            for field in &fields {
+                prop_assert_eq!(reader.take().unwrap(), field.as_slice());
+            }
+            prop_assert!(reader.finish().is_ok());
+        }
     }
 }

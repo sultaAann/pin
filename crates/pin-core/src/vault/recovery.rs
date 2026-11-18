@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 use zeroize::Zeroizing;
 
@@ -14,13 +15,52 @@ const GROUP: usize = 4;
 pub struct RecoveryKey(Zeroizing<[u8; KEY_LEN]>);
 
 impl RecoveryKey {
-    pub(crate) fn generate() -> Result<Self> {
+    pub(super) fn generate() -> Result<Self> {
         let mut key = Zeroizing::new([0u8; KEY_LEN]);
         random::fill(key.as_mut_slice())?;
         Ok(Self(key))
     }
 
     pub fn parse(text: &str) -> Result<Self> {
+        text.parse()
+    }
+
+    pub fn to_display(&self) -> Zeroizing<String> {
+        let mut text = Zeroizing::new(String::with_capacity(SYMBOLS + SYMBOLS / GROUP));
+        let mut push = |value: u16, count: &mut usize| {
+            if *count > 0 && (*count).is_multiple_of(GROUP) {
+                text.push('-');
+            }
+            text.push(char::from(ALPHABET[usize::from(value & 31)]));
+            *count += 1;
+        };
+        let mut count = 0;
+        let mut acc: u16 = 0;
+        let mut bits = 0;
+        for &byte in self.0.iter() {
+            acc = (acc << 8) | u16::from(byte);
+            bits += 8;
+            while bits >= 5 {
+                bits -= 5;
+                push(acc >> bits, &mut count);
+                acc &= (1 << bits) - 1;
+            }
+        }
+        if bits > 0 {
+            push(acc << (5 - bits), &mut count);
+        }
+        text
+    }
+
+    pub(super) fn wrapping_key(&self) -> SecretKey {
+        SecretKey::derived("pin vault recovery key v1", self.0.as_slice())
+    }
+}
+
+impl FromStr for RecoveryKey {
+    type Err = Error;
+
+    fn from_str(text: &str) -> Result<Self> {
         let mut values = Zeroizing::new(Vec::with_capacity(SYMBOLS));
         for c in text.bytes() {
             if c == b'-' || c.is_ascii_whitespace() {
@@ -63,37 +103,6 @@ impl RecoveryKey {
         }
         Ok(Self(key))
     }
-
-    pub fn to_display(&self) -> Zeroizing<String> {
-        let mut text = Zeroizing::new(String::with_capacity(SYMBOLS + SYMBOLS / GROUP));
-        let mut push = |value: u16, count: &mut usize| {
-            if *count > 0 && (*count).is_multiple_of(GROUP) {
-                text.push('-');
-            }
-            text.push(char::from(ALPHABET[usize::from(value & 31)]));
-            *count += 1;
-        };
-        let mut count = 0;
-        let mut acc: u16 = 0;
-        let mut bits = 0;
-        for &byte in self.0.iter() {
-            acc = (acc << 8) | u16::from(byte);
-            bits += 8;
-            while bits >= 5 {
-                bits -= 5;
-                push(acc >> bits, &mut count);
-                acc &= (1 << bits) - 1;
-            }
-        }
-        if bits > 0 {
-            push(acc << (5 - bits), &mut count);
-        }
-        text
-    }
-
-    pub(crate) fn wrapping_key(&self) -> SecretKey {
-        SecretKey::derived("pin vault recovery key v1", self.0.as_slice())
-    }
 }
 
 impl fmt::Debug for RecoveryKey {
@@ -104,20 +113,19 @@ impl fmt::Debug for RecoveryKey {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    use proptest::prelude::*;
 
     use super::*;
 
-    #[test]
-    fn display_parse_roundtrip() {
-        for _ in 0..32 {
-            let key = RecoveryKey::generate().unwrap();
+    proptest! {
+        #[test]
+        fn display_parse_roundtrip(bytes in any::<[u8; KEY_LEN]>()) {
+            let key = RecoveryKey(Zeroizing::new(bytes));
             let text = key.to_display();
-            assert_eq!(text.len(), SYMBOLS + SYMBOLS.div_ceil(GROUP) - 1);
-            let parsed = RecoveryKey::parse(&text).unwrap();
-            assert_eq!(*parsed.0, *key.0);
+            prop_assert_eq!(text.len(), SYMBOLS + SYMBOLS.div_ceil(GROUP) - 1);
+            prop_assert_eq!(*RecoveryKey::parse(&text).unwrap().0, bytes);
             let loose = text.to_lowercase().replace('-', " ").replace('0', "o");
-            assert_eq!(*RecoveryKey::parse(&loose).unwrap().0, *key.0);
+            prop_assert_eq!(*loose.parse::<RecoveryKey>().unwrap().0, bytes);
         }
     }
 

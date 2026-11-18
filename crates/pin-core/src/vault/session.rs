@@ -8,21 +8,45 @@ use crate::error::{Error, Result};
 use crate::random;
 use crate::store::write_tx;
 
-pub(super) const UID: usize = 16;
+const UID_LEN: usize = 16;
 const SALT_LEN: usize = 16;
 
 const AAD_PASSWORD_WRAP: &[u8] = b"pin/vault/password-wrap";
 const AAD_RECOVERY_WRAP: &[u8] = b"pin/vault/recovery-wrap";
 
+macro_rules! uid_type {
+    ($name:ident) => {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        pub(super) struct $name([u8; UID_LEN]);
+
+        impl $name {
+            pub(super) fn random() -> Result<Self> {
+                random::array().map(Self)
+            }
+
+            pub(super) fn from_slice(bytes: &[u8]) -> Result<Self> {
+                bytes.try_into().map(Self).map_err(|_| Error::Corrupt)
+            }
+
+            pub(super) const fn as_bytes(&self) -> &[u8] {
+                &self.0
+            }
+        }
+    };
+}
+
+uid_type!(VaultUid);
+uid_type!(SecretUid);
+
 pub(crate) struct Session {
     key: SecretKey,
-    uid: [u8; UID],
+    uid: VaultUid,
     last_used: Instant,
     last_used_wall: SystemTime,
 }
 
 impl Session {
-    fn new(key: SecretKey, uid: [u8; UID]) -> Self {
+    fn new(key: SecretKey, uid: VaultUid) -> Self {
         Self {
             key,
             uid,
@@ -46,14 +70,14 @@ impl Session {
         self.is_idle_at(timeout, Instant::now(), SystemTime::now())
     }
 
-    fn deadline(&self, timeout: Duration) -> Instant {
+    fn deadline(&self, timeout: Duration) -> Option<Instant> {
         let now = Instant::now();
         let idle = now.saturating_duration_since(self.last_used).max(
             SystemTime::now()
                 .duration_since(self.last_used_wall)
                 .unwrap_or(timeout),
         );
-        now + timeout.saturating_sub(idle)
+        now.checked_add(timeout.saturating_sub(idle))
     }
 
     fn touch(&mut self) {
@@ -77,14 +101,14 @@ impl Session {
     fn aad<'b>(&'b self, label: &'b [u8], aad: &[&'b [u8]]) -> Vec<&'b [u8]> {
         let mut parts = Vec::with_capacity(aad.len() + 2);
         parts.push(label);
-        parts.push(&self.uid[..]);
+        parts.push(self.uid.as_bytes());
         parts.extend_from_slice(aad);
         parts
     }
 }
 
 struct VaultRow {
-    uid: [u8; UID],
+    uid: VaultUid,
     salt: [u8; SALT_LEN],
     kdf: KdfParams,
     password_wrap: Vec<u8>,
@@ -113,7 +137,7 @@ impl Vault<'_> {
         if load_vault(self.conn)?.is_some() {
             return Err(Error::VaultExists);
         }
-        let uid: [u8; UID] = random::array()?;
+        let uid = VaultUid::random()?;
         let key = SecretKey::random()?;
         let recovery = RecoveryKey::generate()?;
         let wraps = wrap_with_password(&key, &uid, password, self.options.kdf)?;
@@ -128,7 +152,7 @@ impl Vault<'_> {
                                 password_wrap, recovery_wrap)
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                &uid[..],
+                uid.as_bytes(),
                 &wraps.salt[..],
                 wraps.kdf.memory_kib,
                 wraps.kdf.iterations,
@@ -139,6 +163,7 @@ impl Vault<'_> {
         )?;
         tx.commit()?;
         *self.session = Some(Session::new(key, uid));
+        tracing::debug!("vault created and unlocked");
         Ok(recovery)
     }
 
@@ -146,6 +171,7 @@ impl Vault<'_> {
         let row = load_vault(self.conn)?.ok_or(Error::VaultMissing)?;
         let key = unwrap_with_password(&row, password)?;
         *self.session = Some(Session::new(key, row.uid));
+        tracing::debug!("vault unlocked");
         Ok(())
     }
 
@@ -157,7 +183,7 @@ impl Vault<'_> {
         let row = load_vault(self.conn)?.ok_or(Error::VaultMissing)?;
         let key = unwrap_key(
             &recovery.wrapping_key(),
-            &[AAD_RECOVERY_WRAP, &row.uid],
+            &[AAD_RECOVERY_WRAP, row.uid.as_bytes()],
             &row.recovery_wrap,
             Error::InvalidRecoveryKey,
         )?;
@@ -179,7 +205,9 @@ impl Vault<'_> {
     }
 
     pub fn lock(&mut self) {
-        *self.session = None;
+        if self.session.take().is_some() {
+            tracing::debug!("vault locked");
+        }
     }
 
     pub fn lock_if_idle(&mut self) -> bool {
@@ -189,15 +217,18 @@ impl Vault<'_> {
             .is_some_and(|s| s.is_idle(self.options.auto_lock));
         if idle {
             *self.session = None;
+            tracing::debug!("vault auto-locked");
         }
         idle
     }
 
-    // Lets the app schedule one wake-up for auto-lock instead of polling while it is idle. Instant
-    // stops during system sleep, so the app must also call lock_if_idle on resume.
+    /// Lets the app schedule one wake-up for auto-lock instead of polling while it is idle.
+    /// `Instant` stops during system sleep, so the app must also call [`Vault::lock_if_idle`] on
+    /// resume. Returns `None` when auto-lock is off, the vault is locked or the deadline is
+    /// not representable.
     pub fn lock_deadline(&self) -> Option<Instant> {
         let timeout = self.options.auto_lock?;
-        self.session.as_ref().map(|s| s.deadline(timeout))
+        self.session.as_ref().and_then(|s| s.deadline(timeout))
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -224,7 +255,7 @@ impl Vault<'_> {
                               recovery_wrap = COALESCE(?8, recovery_wrap)
              WHERE id = 1 AND uid = ?1 AND password_wrap = ?2 AND recovery_wrap = ?9",
             params![
-                &row.uid[..],
+                row.uid.as_bytes(),
                 row.password_wrap,
                 &wraps.salt[..],
                 wraps.kdf.memory_kib,
@@ -249,7 +280,7 @@ impl Vault<'_> {
 
 // Every secret operation goes through here so an idle or stale (reset by another process) vault
 // key is dropped before it can read or write anything.
-pub(super) fn session<'s>(
+pub(super) fn active_session<'s>(
     slot: &'s mut Option<Session>,
     conn: &Connection,
     auto_lock: Option<Duration>,
@@ -272,12 +303,13 @@ fn is_valid(
     };
     if current.is_idle(auto_lock) {
         *slot = None;
+        tracing::debug!("vault auto-locked");
         return Ok(false);
     }
     let uid: Option<Vec<u8>> = conn
         .query_row("SELECT uid FROM vault WHERE id = 1", [], |row| row.get(0))
         .optional()?;
-    if uid.as_deref() != Some(&current.uid[..]) {
+    if uid.as_deref() != Some(current.uid.as_bytes()) {
         *slot = None;
         return Ok(false);
     }
@@ -286,13 +318,13 @@ fn is_valid(
 
 fn wrap_with_password(
     key: &SecretKey,
-    uid: &[u8; UID],
+    uid: &VaultUid,
     password: &MasterPassword,
     kdf: KdfParams,
 ) -> Result<Wraps> {
     let salt: [u8; SALT_LEN] = random::array()?;
     let kek = crypto::derive(password.as_bytes(), &salt, kdf)?;
-    let password = crypto::seal(&kek, &[AAD_PASSWORD_WRAP, uid], key.as_bytes())?;
+    let password = crypto::seal(&kek, &[AAD_PASSWORD_WRAP, uid.as_bytes()], key.as_bytes())?;
     Ok(Wraps {
         salt,
         kdf,
@@ -300,10 +332,10 @@ fn wrap_with_password(
     })
 }
 
-fn wrap_with_recovery(key: &SecretKey, uid: &[u8; UID], recovery: &RecoveryKey) -> Result<Vec<u8>> {
+fn wrap_with_recovery(key: &SecretKey, uid: &VaultUid, recovery: &RecoveryKey) -> Result<Vec<u8>> {
     crypto::seal(
         &recovery.wrapping_key(),
-        &[AAD_RECOVERY_WRAP, uid],
+        &[AAD_RECOVERY_WRAP, uid.as_bytes()],
         key.as_bytes(),
     )
 }
@@ -312,7 +344,7 @@ fn unwrap_with_password(row: &VaultRow, password: &MasterPassword) -> Result<Sec
     let kek = crypto::derive(password.as_bytes(), &row.salt, row.kdf)?;
     unwrap_key(
         &kek,
-        &[AAD_PASSWORD_WRAP, &row.uid],
+        &[AAD_PASSWORD_WRAP, row.uid.as_bytes()],
         &row.password_wrap,
         Error::WrongPassword,
     )
@@ -354,7 +386,7 @@ fn load_vault(conn: &Connection) -> Result<Option<VaultRow>> {
     };
     let param = |v: i64| u32::try_from(v).map_err(|_| Error::Corrupt);
     Ok(Some(VaultRow {
-        uid: uid.try_into().map_err(|_| Error::Corrupt)?,
+        uid: VaultUid::from_slice(&uid)?,
         salt: salt.try_into().map_err(|_| Error::Corrupt)?,
         kdf: KdfParams {
             memory_kib: param(memory)?,
@@ -366,22 +398,12 @@ fn load_vault(conn: &Connection) -> Result<Option<VaultRow>> {
     }))
 }
 
-pub(super) fn uid_from(bytes: &[u8]) -> Result<[u8; UID]> {
-    bytes.try_into().map_err(|_| Error::Corrupt)
-}
-
-pub(super) fn new_uid() -> Result<[u8; UID]> {
-    random::array()
-}
-
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
 
     fn session() -> Session {
-        Session::new(SecretKey::random().unwrap(), [0; UID])
+        Session::new(SecretKey::random().unwrap(), VaultUid([0; UID_LEN]))
     }
 
     #[test]
@@ -404,11 +426,26 @@ mod tests {
         let mut s = session();
         let timeout = Duration::from_mins(5);
         let before = Instant::now();
-        assert!(s.deadline(timeout) + Duration::from_secs(1) >= before + timeout);
+        assert!(s.deadline(timeout).unwrap() + Duration::from_secs(1) >= before + timeout);
         s.last_used_wall -= Duration::from_mins(4);
-        assert!(s.deadline(timeout) <= Instant::now() + Duration::from_mins(1));
+        assert!(s.deadline(timeout).unwrap() <= Instant::now() + Duration::from_mins(1));
         s.last_used_wall -= Duration::from_mins(10);
-        assert!(s.deadline(timeout) <= Instant::now());
+        assert!(s.deadline(timeout).unwrap() <= Instant::now());
+    }
+
+    #[test]
+    fn deadline_does_not_overflow_on_huge_timeout() {
+        assert_eq!(session().deadline(Duration::MAX), None);
+    }
+
+    #[test]
+    fn touch_restarts_idle_timer() {
+        let mut s = session();
+        s.last_used -= Duration::from_mins(2);
+        s.last_used_wall -= Duration::from_mins(2);
+        assert!(s.is_idle(Some(Duration::from_mins(1))));
+        s.touch();
+        assert!(!s.is_idle(Some(Duration::from_mins(1))));
     }
 
     #[test]

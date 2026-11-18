@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 pub struct EntryId(pub(crate) i64);
 
 impl EntryId {
-    pub fn get(self) -> i64 {
+    pub const fn get(self) -> i64 {
         self.0
     }
 }
@@ -31,11 +31,11 @@ impl Timestamp {
         Self(millis)
     }
 
-    pub fn from_millis(millis: i64) -> Self {
+    pub const fn from_millis(millis: i64) -> Self {
         Self(millis)
     }
 
-    pub fn as_millis(self) -> i64 {
+    pub const fn as_millis(self) -> i64 {
         self.0
     }
 }
@@ -48,15 +48,36 @@ impl PinSlot {
     pub const MAX: u8 = 9;
 
     pub fn new(slot: u8) -> Result<Self> {
+        Self::try_from(slot)
+    }
+
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for PinSlot {
+    type Error = Error;
+
+    fn try_from(slot: u8) -> Result<Self> {
         if (Self::MIN..=Self::MAX).contains(&slot) {
             Ok(Self(slot))
         } else {
             Err(Error::InvalidSlot(slot))
         }
     }
+}
 
-    pub fn get(self) -> u8 {
-        self.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pin {
+    None,
+    Pinned,
+    Slot(PinSlot),
+}
+
+impl Pin {
+    pub const fn is_pinned(self) -> bool {
+        !matches!(self, Self::None)
     }
 }
 
@@ -82,7 +103,7 @@ impl FormatKind {
         }
     }
 
-    pub fn parse(kind: &str) -> Self {
+    pub fn from_mime(kind: &str) -> Self {
         match kind {
             "text/plain" => Self::Text,
             "text/html" => Self::Html,
@@ -98,6 +119,12 @@ impl FormatKind {
 pub struct Format {
     pub kind: FormatKind,
     pub data: Vec<u8>,
+}
+
+impl From<&str> for FormatKind {
+    fn from(kind: &str) -> Self {
+        Self::from_mime(kind)
+    }
 }
 
 impl Zeroize for Format {
@@ -139,8 +166,7 @@ pub struct Entry {
     pub size: u64,
     pub created_at: Timestamp,
     pub last_used_at: Timestamp,
-    pub pinned: bool,
-    pub slot: Option<PinSlot>,
+    pub pin: Pin,
 }
 
 impl fmt::Debug for Entry {
@@ -149,74 +175,8 @@ impl fmt::Debug for Entry {
             .field("id", &self.id)
             .field("kind", &self.kind)
             .field("size", &self.size)
-            .field("pinned", &self.pinned)
-            .field("slot", &self.slot)
+            .field("pin", &self.pin)
             .finish_non_exhaustive()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SecretId(pub(crate) i64);
-
-impl SecretId {
-    pub fn get(self) -> i64 {
-        self.0
-    }
-}
-
-impl fmt::Display for SecretId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-pub struct NewSecret {
-    pub name: String,
-    pub note: String,
-    pub formats: Vec<Format>,
-}
-
-impl fmt::Debug for NewSecret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NewSecret")
-            .field("formats", &self.formats)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for NewSecret {
-    fn drop(&mut self) {
-        self.name.zeroize();
-        self.note.zeroize();
-        self.formats.zeroize();
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct Secret {
-    pub id: SecretId,
-    pub name: String,
-    pub note: String,
-    pub kind: FormatKind,
-    pub size: u64,
-    pub created_at: Timestamp,
-    pub updated_at: Timestamp,
-}
-
-impl fmt::Debug for Secret {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Secret")
-            .field("id", &self.id)
-            .field("kind", &self.kind)
-            .field("size", &self.size)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Drop for Secret {
-    fn drop(&mut self) {
-        self.name.zeroize();
-        self.note.zeroize();
     }
 }
 
@@ -227,15 +187,6 @@ mod tests {
     #[test]
     fn debug_output_never_contains_content() {
         let format = Format::new(FormatKind::Text, "hunter2");
-        let secret = Secret {
-            id: SecretId(1),
-            name: "bank-login".into(),
-            note: "pin-1234".into(),
-            kind: FormatKind::Text,
-            size: 7,
-            created_at: Timestamp::from_millis(0),
-            updated_at: Timestamp::from_millis(0),
-        };
         let entry = Entry {
             id: EntryId(1),
             kind: FormatKind::Text,
@@ -244,17 +195,32 @@ mod tests {
             size: 7,
             created_at: Timestamp::from_millis(0),
             last_used_at: Timestamp::from_millis(0),
-            pinned: false,
-            slot: None,
+            pin: Pin::None,
         };
-        let new = NewSecret {
-            name: "bank-login".into(),
-            note: String::new(),
-            formats: vec![format.clone()],
-        };
-        let all = format!("{format:?} {secret:?} {entry:?} {new:?}");
-        for leak in ["hunter2", "104, 117", "bank-login", "pin-1234"] {
+        let all = format!("{format:?} {entry:?}");
+        for leak in ["hunter2", "104, 117"] {
             assert!(!all.contains(leak), "{leak} in {all}");
+        }
+    }
+
+    #[test]
+    fn pin_slot_converts_only_in_range() {
+        assert_eq!(PinSlot::try_from(PinSlot::MIN).unwrap().get(), PinSlot::MIN);
+        assert!(PinSlot::try_from(PinSlot::MAX + 1).is_err());
+        assert!(PinSlot::try_from(0).is_err());
+    }
+
+    #[test]
+    fn format_kind_roundtrips_through_mime() {
+        for kind in [
+            FormatKind::Text,
+            FormatKind::Html,
+            FormatKind::Rtf,
+            FormatKind::Png,
+            FormatKind::Files,
+            FormatKind::Other("x/y".into()),
+        ] {
+            assert_eq!(FormatKind::from(kind.as_str()), kind);
         }
     }
 }

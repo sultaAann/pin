@@ -3,7 +3,7 @@ use std::sync::Arc;
 use keyring_core::{CredentialStore, Entry};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, KeychainFailure, Result};
 use crate::key::Key;
 
 pub trait KeyStore {
@@ -84,29 +84,28 @@ pub(crate) fn load_or_create(store: &impl KeyStore, database_exists: bool) -> Re
     }
     let key = Key::generate()?;
     store.save(&key)?;
+    tracing::info!("created database key in the keychain");
     Ok(key)
 }
 
 // Some keyring errors carry the raw stored bytes; they are wiped and never reach Debug output.
 fn keychain_error(e: keyring_core::Error) -> Error {
     use keyring_core::Error as E;
-    let (message, source) = match e {
+    let (kind, source) = match e {
         E::BadEncoding(mut bytes) | E::BadDataFormat(mut bytes, _) => {
             bytes.zeroize();
-            ("stored item has an unexpected format", None)
+            (KeychainFailure::BadFormat, None)
         }
-        e @ E::NoStorageAccess(_) => ("access denied", Some(e)),
-        e @ E::NoEntry => ("item not found", Some(e)),
-        e @ E::Ambiguous(_) => ("more than one matching item", Some(e)),
-        e => ("platform failure", Some(e)),
+        e @ E::NoStorageAccess(_) => (KeychainFailure::AccessDenied, Some(e)),
+        e @ E::NoEntry => (KeychainFailure::NotFound, Some(e)),
+        e @ E::Ambiguous(_) => (KeychainFailure::Ambiguous, Some(e)),
+        e => (KeychainFailure::Platform, Some(e)),
     };
-    Error::Keychain { message, source }
+    Error::Keychain { kind, source }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use std::cell::RefCell;
 
     use super::*;
@@ -116,7 +115,7 @@ mod tests {
 
     impl KeyStore for Memory {
         fn load(&self) -> Result<Option<Key>> {
-            self.0.borrow().as_deref().map(Key::from_slice).transpose()
+            self.0.borrow().as_deref().map(Key::try_from).transpose()
         }
 
         fn save(&self, key: &Key) -> Result<()> {
@@ -156,13 +155,19 @@ mod tests {
     #[test]
     fn keychain_errors_drop_stored_bytes() {
         let error = keychain_error(keyring_core::Error::BadEncoding(b"leaked-key".to_vec()));
-        assert!(matches!(error, Error::Keychain { source: None, .. }));
+        assert!(matches!(
+            error,
+            Error::Keychain {
+                kind: KeychainFailure::BadFormat,
+                source: None
+            }
+        ));
         assert!(!format!("{error:?}").contains("108"));
         assert!(matches!(
             keychain_error(keyring_core::Error::NoEntry),
             Error::Keychain {
-                source: Some(_),
-                ..
+                kind: KeychainFailure::NotFound,
+                source: Some(_)
             }
         ));
     }

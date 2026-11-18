@@ -2,43 +2,51 @@ use std::fmt;
 
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::KdfParams;
 use super::codec::encode;
 use crate::error::{Error, Result};
 use crate::random;
 
-pub(crate) const KEY_LEN: usize = 32;
+pub(super) const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 
 const MAX_MEMORY_KIB: u32 = 1024 * 1024;
 const MAX_ITERATIONS: u32 = 64;
 const MAX_PARALLELISM: u32 = 16;
 
-pub(crate) struct SecretKey(Zeroizing<[u8; KEY_LEN]>);
+pub(super) struct SecretKey(Box<Zeroizing<[u8; KEY_LEN]>>);
 
 impl SecretKey {
-    pub(crate) fn random() -> Result<Self> {
-        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    fn zeroed() -> Zeroizing<[u8; KEY_LEN]> {
+        Zeroizing::new([0u8; KEY_LEN])
+    }
+
+    pub(super) fn random() -> Result<Self> {
+        let mut key = Box::new(Self::zeroed());
         random::fill(key.as_mut_slice())?;
         Ok(Self(key))
     }
 
-    pub(crate) fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    pub(super) fn from_slice(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != KEY_LEN {
             return Err(Error::Corrupt);
         }
+        let mut key = Box::new(Self::zeroed());
         key.copy_from_slice(bytes);
         Ok(Self(key))
     }
 
-    pub(crate) fn derived(context: &str, material: &[u8]) -> Self {
-        Self(Zeroizing::new(blake3::derive_key(context, material)))
+    pub(super) fn derived(context: &str, material: &[u8]) -> Self {
+        let mut derived = blake3::derive_key(context, material);
+        let mut key = Box::new(Self::zeroed());
+        key.copy_from_slice(&derived);
+        derived.zeroize();
+        Self(key)
     }
 
-    pub(crate) fn as_bytes(&self) -> &[u8; KEY_LEN] {
+    pub(super) fn as_bytes(&self) -> &[u8; KEY_LEN] {
         &self.0
     }
 }
@@ -49,10 +57,11 @@ impl fmt::Debug for SecretKey {
     }
 }
 
-pub(crate) fn derive(password: &[u8], salt: &[u8], params: KdfParams) -> Result<SecretKey> {
+pub(super) fn derive(password: &[u8], salt: &[u8], params: KdfParams) -> Result<SecretKey> {
     if params.memory_kib > MAX_MEMORY_KIB
         || !(1..=MAX_ITERATIONS).contains(&params.iterations)
         || !(1..=MAX_PARALLELISM).contains(&params.parallelism)
+        || params.memory_kib < 8 * params.parallelism
     {
         return Err(Error::InvalidKdfParams);
     }
@@ -64,14 +73,14 @@ pub(crate) fn derive(password: &[u8], salt: &[u8], params: KdfParams) -> Result<
     )
     .map_err(|_| Error::InvalidKdfParams)?;
     let argon = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-    let mut key = Zeroizing::new([0u8; KEY_LEN]);
+    let mut key = Box::new(SecretKey::zeroed());
     argon
         .hash_password_into(password, salt, key.as_mut_slice())
-        .map_err(|_| Error::InvalidKdfParams)?;
+        .map_err(Error::Kdf)?;
     Ok(SecretKey(key))
 }
 
-pub(crate) fn seal(key: &SecretKey, aad: &[&[u8]], plaintext: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn seal(key: &SecretKey, aad: &[&[u8]], plaintext: &[u8]) -> Result<Vec<u8>> {
     let nonce: [u8; NONCE_LEN] = random::array()?;
     let aad = encode(aad);
     let ciphertext = cipher(key)
@@ -82,14 +91,14 @@ pub(crate) fn seal(key: &SecretKey, aad: &[&[u8]], plaintext: &[u8]) -> Result<V
                 aad: &aad,
             },
         )
-        .map_err(|_| Error::Corrupt)?;
+        .map_err(|_| Error::TooLarge)?;
     let mut sealed = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     sealed.extend_from_slice(&nonce);
     sealed.extend_from_slice(&ciphertext);
     Ok(sealed)
 }
 
-pub(crate) fn open(key: &SecretKey, aad: &[&[u8]], sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+pub(super) fn open(key: &SecretKey, aad: &[&[u8]], sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
     let (nonce, ciphertext) = sealed
         .split_first_chunk::<NONCE_LEN>()
         .ok_or(Error::Corrupt)?;
@@ -112,8 +121,6 @@ fn cipher(key: &SecretKey) -> XChaCha20Poly1305 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
-
     use super::*;
 
     const FAST: KdfParams = KdfParams {

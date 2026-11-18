@@ -3,12 +3,13 @@ use std::mem;
 use rusqlite::{Connection, OptionalExtension, params};
 use zeroize::{Zeroize, Zeroizing};
 
+use super::Vault;
 use super::codec::{Reader, encode};
-use super::session::{Session, new_uid, session, uid_from};
-use super::{Vault, session::UID};
+use super::model::{NewSecret, Secret, SecretId, SecretLabel};
+use super::session::{SecretUid, Session, active_session};
 use crate::content;
 use crate::error::{Error, Result};
-use crate::model::{EntryId, Format, FormatKind, NewSecret, Secret, SecretId, Timestamp};
+use crate::model::{EntryId, Format, FormatKind, Timestamp};
 use crate::store::{checkpoint, delete_entry, load_formats, write_tx};
 
 const AAD_SECRET_META: &[u8] = b"pin/secret/meta";
@@ -37,10 +38,12 @@ impl Drop for Meta {
     }
 }
 
+type SecretRow = (SecretId, Vec<u8>, Vec<u8>, Timestamp, Timestamp);
+
 impl Vault<'_> {
     pub fn add(&mut self, mut new: NewSecret) -> Result<SecretId> {
         let tx = write_tx(self.conn)?;
-        let session = session(self.session, &tx, self.options.auto_lock)?;
+        let session = active_session(self.session, &tx, self.options.auto_lock)?;
         let id = insert(
             &tx,
             session,
@@ -52,18 +55,12 @@ impl Vault<'_> {
         Ok(id)
     }
 
-    pub fn move_from_history(
-        &mut self,
-        entry: EntryId,
-        name: String,
-        note: String,
-    ) -> Result<SecretId> {
-        let name = Zeroizing::new(name);
-        let note = Zeroizing::new(note);
+    #[expect(clippy::needless_pass_by_value)]
+    pub fn move_from_history(&mut self, entry: EntryId, label: SecretLabel) -> Result<SecretId> {
         let tx = write_tx(self.conn)?;
-        let session = session(self.session, &tx, self.options.auto_lock)?;
+        let session = active_session(self.session, &tx, self.options.auto_lock)?;
         let formats = load_formats(&tx, entry)?;
-        let id = insert(&tx, session, &name, &note, formats)?;
+        let id = insert(&tx, session, &label.name, &label.note, formats)?;
         delete_entry(&tx, entry)?;
         tx.commit()?;
         checkpoint(self.conn);
@@ -72,34 +69,34 @@ impl Vault<'_> {
 
     pub fn secrets(&mut self) -> Result<Vec<Secret>> {
         let tx = self.conn.transaction()?;
-        let session = session(self.session, &tx, self.options.auto_lock)?;
+        let session = active_session(self.session, &tx, self.options.auto_lock)?;
         let rows = {
             let mut stmt =
                 tx.prepare_cached("SELECT id, uid, meta, created_at, updated_at FROM secrets")?;
             stmt.query_map([], |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
                 ))
             })?
-            .collect::<rusqlite::Result<Vec<_>>>()?
+            .collect::<rusqlite::Result<Vec<SecretRow>>>()?
         };
         tx.commit()?;
         let mut secrets = rows
             .into_iter()
             .map(|(id, uid, meta, created_at, updated_at)| {
-                let mut meta = open_meta(session, &uid_from(&uid)?, &meta)?;
+                let mut meta = open_meta(session, &SecretUid::from_slice(&uid)?, &meta)?;
                 Ok(Secret {
-                    id: SecretId(id),
+                    id,
                     name: mem::take(&mut meta.name),
                     note: mem::take(&mut meta.note),
                     kind: mem::replace(&mut meta.kind, FormatKind::Text),
                     size: meta.size,
-                    created_at: Timestamp::from_millis(created_at),
-                    updated_at: Timestamp::from_millis(updated_at),
+                    created_at,
+                    updated_at,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -115,13 +112,13 @@ impl Vault<'_> {
 
     pub fn formats(&mut self, id: SecretId) -> Result<Zeroizing<Vec<Format>>> {
         let tx = self.conn.transaction()?;
-        let session = session(self.session, &tx, self.options.auto_lock)?;
+        let session = active_session(self.session, &tx, self.options.auto_lock)?;
         let (uid, meta) = load_meta(&tx, session, id)?;
         let sealed = {
             let mut stmt = tx.prepare_cached(
                 "SELECT data FROM secret_formats WHERE secret_id = ?1 ORDER BY id",
             )?;
-            stmt.query_map([id.0], |row| row.get::<_, Vec<u8>>(0))?
+            stmt.query_map([id], |row| row.get::<_, Vec<u8>>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         tx.commit()?;
@@ -132,7 +129,7 @@ impl Vault<'_> {
         for (index, data) in sealed.iter().enumerate() {
             let plain = open_format(session, &uid, index, sealed.len(), data)?;
             let mut reader = Reader::new(&plain);
-            let kind = FormatKind::parse(reader.take_str()?);
+            let kind = FormatKind::from_mime(reader.take_str()?);
             let data = reader.take()?.to_vec();
             reader.finish()?;
             formats.push(Format { kind, data });
@@ -140,26 +137,21 @@ impl Vault<'_> {
         Ok(formats)
     }
 
-    pub fn update(&mut self, id: SecretId, name: String, note: String) -> Result<()> {
-        let name = Zeroizing::new(name);
-        let note = Zeroizing::new(note);
+    #[expect(clippy::needless_pass_by_value)]
+    pub fn update(&mut self, id: SecretId, label: SecretLabel) -> Result<()> {
         let tx = write_tx(self.conn)?;
-        let session = session(self.session, &tx, self.options.auto_lock)?;
+        let session = active_session(self.session, &tx, self.options.auto_lock)?;
         let (uid, old) = load_meta(&tx, session, id)?;
         let meta = MetaRef {
-            name: checked_name(&name)?,
-            note: &note,
+            name: checked_name(&label.name)?,
+            note: &label.note,
             kind: &old.kind,
             size: old.size,
             formats: old.formats,
         };
         tx.execute(
             "UPDATE secrets SET meta = ?2, updated_at = ?3 WHERE id = ?1",
-            params![
-                id.0,
-                seal_meta(session, &uid, &meta)?,
-                Timestamp::now().as_millis()
-            ],
+            params![id, seal_meta(session, &uid, &meta)?, Timestamp::now()],
         )?;
         tx.commit()?;
         Ok(())
@@ -167,8 +159,8 @@ impl Vault<'_> {
 
     pub fn delete(&mut self, id: SecretId) -> Result<()> {
         let tx = write_tx(self.conn)?;
-        session(self.session, &tx, self.options.auto_lock)?;
-        if tx.execute("DELETE FROM secrets WHERE id = ?1", [id.0])? == 0 {
+        active_session(self.session, &tx, self.options.auto_lock)?;
+        if tx.execute("DELETE FROM secrets WHERE id = ?1", [id])? == 0 {
             return Err(Error::SecretNotFound(id));
         }
         tx.commit()?;
@@ -188,7 +180,7 @@ fn insert(
     if formats.is_empty() {
         return Err(Error::Empty);
     }
-    let uid = new_uid()?;
+    let uid = SecretUid::random()?;
     let kind = content::primary_kind(&formats);
     let meta = MetaRef {
         name,
@@ -197,13 +189,14 @@ fn insert(
         size: u64::try_from(content::size(&formats)).unwrap_or(u64::MAX),
         formats: u64::try_from(formats.len()).unwrap_or(u64::MAX),
     };
-    let now = Timestamp::now().as_millis();
+    let now = Timestamp::now();
     conn.execute(
         "INSERT INTO secrets (uid, meta, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-        params![&uid[..], seal_meta(session, &uid, &meta)?, now],
+        params![uid.as_bytes(), seal_meta(session, &uid, &meta)?, now],
     )?;
-    let id = conn.last_insert_rowid();
-    let mut stmt = conn.prepare("INSERT INTO secret_formats (secret_id, data) VALUES (?1, ?2)")?;
+    let id = SecretId(conn.last_insert_rowid());
+    let mut stmt =
+        conn.prepare_cached("INSERT INTO secret_formats (secret_id, data) VALUES (?1, ?2)")?;
     for (index, format) in formats.iter().enumerate() {
         let plain = encode(&[format.kind.as_str().as_bytes(), &format.data]);
         stmt.execute(params![
@@ -211,7 +204,7 @@ fn insert(
             seal_format(session, &uid, index, formats.len(), &plain)?
         ])?;
     }
-    Ok(SecretId(id))
+    Ok(id)
 }
 
 // Index and count bind each format to its position, so rows cannot be reordered or duplicated
@@ -223,27 +216,27 @@ fn position(index: usize, count: usize) -> [[u8; 8]; 2] {
 
 fn seal_format(
     session: &Session,
-    uid: &[u8; UID],
+    uid: &SecretUid,
     index: usize,
     count: usize,
     plain: &[u8],
 ) -> Result<Vec<u8>> {
     let [index, count] = position(index, count);
-    session.seal(AAD_SECRET_FORMAT, &[uid, &index, &count], plain)
+    session.seal(AAD_SECRET_FORMAT, &[uid.as_bytes(), &index, &count], plain)
 }
 
 fn open_format(
     session: &Session,
-    uid: &[u8; UID],
+    uid: &SecretUid,
     index: usize,
     count: usize,
     sealed: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>> {
     let [index, count] = position(index, count);
-    session.open(AAD_SECRET_FORMAT, &[uid, &index, &count], sealed)
+    session.open(AAD_SECRET_FORMAT, &[uid.as_bytes(), &index, &count], sealed)
 }
 
-fn seal_meta(session: &Session, uid: &[u8; UID], meta: &MetaRef<'_>) -> Result<Vec<u8>> {
+fn seal_meta(session: &Session, uid: &SecretUid, meta: &MetaRef<'_>) -> Result<Vec<u8>> {
     let plain = encode(&[
         meta.name.as_bytes(),
         meta.note.as_bytes(),
@@ -251,33 +244,34 @@ fn seal_meta(session: &Session, uid: &[u8; UID], meta: &MetaRef<'_>) -> Result<V
         &meta.size.to_le_bytes(),
         &meta.formats.to_le_bytes(),
     ]);
-    session.seal(AAD_SECRET_META, &[uid], &plain)
+    session.seal(AAD_SECRET_META, &[uid.as_bytes()], &plain)
 }
 
-fn open_meta(session: &Session, uid: &[u8; UID], sealed: &[u8]) -> Result<Meta> {
-    let plain = session.open(AAD_SECRET_META, &[uid], sealed)?;
+fn open_meta(session: &Session, uid: &SecretUid, sealed: &[u8]) -> Result<Meta> {
+    let plain = session.open(AAD_SECRET_META, &[uid.as_bytes()], sealed)?;
     let mut reader = Reader::new(&plain);
-    let meta = Meta {
-        name: reader.take_str()?.to_owned(),
-        note: reader.take_str()?.to_owned(),
-        kind: FormatKind::parse(reader.take_str()?),
-        size: reader.take_u64()?,
-        formats: reader.take_u64()?,
-    };
+    let mut name = Zeroizing::new(reader.take_str()?.to_owned());
+    let mut note = Zeroizing::new(reader.take_str()?.to_owned());
+    let kind = FormatKind::from_mime(reader.take_str()?);
+    let size = reader.take_u64()?;
+    let formats = reader.take_u64()?;
     reader.finish()?;
-    Ok(meta)
+    Ok(Meta {
+        name: mem::take(&mut *name),
+        note: mem::take(&mut *note),
+        kind,
+        size,
+        formats,
+    })
 }
 
-fn load_meta(conn: &Connection, session: &Session, id: SecretId) -> Result<([u8; UID], Meta)> {
+fn load_meta(conn: &Connection, session: &Session, id: SecretId) -> Result<(SecretUid, Meta)> {
     let (uid, sealed): (Vec<u8>, Vec<u8>) = conn
-        .query_row(
-            "SELECT uid, meta FROM secrets WHERE id = ?1",
-            [id.0],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .prepare_cached("SELECT uid, meta FROM secrets WHERE id = ?1")?
+        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
         .optional()?
         .ok_or(Error::SecretNotFound(id))?;
-    let uid = uid_from(&uid)?;
+    let uid = SecretUid::from_slice(&uid)?;
     let meta = open_meta(session, &uid, &sealed)?;
     Ok((uid, meta))
 }
