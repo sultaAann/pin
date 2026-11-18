@@ -9,7 +9,15 @@ fn key() -> Key {
 }
 
 fn open(dir: &Path, history_limit: usize) -> Store {
-    Store::open(&dir.join("pin.db"), &key(), Options { history_limit }).unwrap()
+    Store::open(
+        &dir.join("pin.db"),
+        &key(),
+        Options {
+            history_limit,
+            ..Options::default()
+        },
+    )
+    .unwrap()
 }
 
 fn text(s: &str) -> NewEntry {
