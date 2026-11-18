@@ -13,6 +13,7 @@ blake3.workspace = true
 chacha20poly1305.workspace = true
 directories.workspace = true
 getrandom.workspace = true
+image.workspace = true
 keyring-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -34,6 +35,7 @@ windows-native-keyring-store.workspace = true
 dbus-secret-service-keyring-store.workspace = true
 
 [dev-dependencies]
+image.workspace = true
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

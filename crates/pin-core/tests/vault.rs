@@ -513,6 +513,7 @@ fn upgrade_from_v1_keeps_history_and_scrubs_search_index() {
     raw(dir.path())
         .execute_batch(
             "DROP TABLE secret_formats; DROP TABLE secrets; DROP TABLE vault; DROP INDEX entries_seq;
+             ALTER TABLE entries DROP COLUMN thumbnail;
              INSERT INTO entries_fts (entries_fts, rank) VALUES ('secure-delete', 0);
              PRAGMA user_version = 1;",
         )
@@ -532,7 +533,7 @@ fn upgrade_from_v1_keeps_history_and_scrubs_search_index() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!((version, secure), (2, 1));
+    assert_eq!((version, secure), (3, 1));
 }
 
 #[test]

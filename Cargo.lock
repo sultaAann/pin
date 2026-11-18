@@ -3146,9 +3146,11 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pin-clipboard",
  "pin-core",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
  "winit",
+ "zeroize",
 ]
 
 [[package]]
@@ -3183,6 +3185,7 @@ dependencies = [
  "dbus-secret-service-keyring-store",
  "directories",
  "getrandom 0.4.3",
+ "image",
  "keyring-core",
  "proptest",
  "rusqlite",

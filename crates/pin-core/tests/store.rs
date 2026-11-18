@@ -438,3 +438,44 @@ fn concurrent_first_runs_share_one_key() {
     }
     assert_eq!(*keys.saves.lock().unwrap(), 1);
 }
+
+fn tiny_png(width: u32, height: u32) -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(width, height, image::Rgba([1, 2, 3, 255]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[test]
+fn image_entries_get_a_stored_thumbnail_and_size_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 10);
+    let id = store
+        .insert(pin_core::NewEntry {
+            formats: vec![Format::new(FormatKind::Png, tiny_png(640, 320))],
+            source_app: None,
+        })
+        .unwrap();
+    assert_eq!(
+        store.get(id).unwrap().preview,
+        "Image \u{00B7} 640\u{00D7}320"
+    );
+    let thumb = store.thumbnail(id).unwrap().unwrap();
+    assert_eq!((thumb.width, thumb.height), (320, 160));
+    drop(store);
+    let mut store = open(dir.path(), 10);
+    assert_eq!(store.thumbnail(id).unwrap().unwrap().width, 320);
+}
+
+#[test]
+fn text_entries_have_no_thumbnail() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 10);
+    let id = store
+        .insert(pin_core::NewEntry {
+            formats: vec![Format::new(FormatKind::Text, "hello")],
+            source_app: None,
+        })
+        .unwrap();
+    assert!(store.thumbnail(id).unwrap().is_none());
+}

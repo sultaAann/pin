@@ -67,6 +67,10 @@ INSERT INTO entries_fts (entries_fts) VALUES ('optimize');
 
 CREATE INDEX entries_seq ON entries (use_seq);
 ",
+    r"
+-- NULL: not generated yet; empty blob: the image could not be decoded.
+ALTER TABLE entries ADD COLUMN thumbnail BLOB;
+",
 ];
 
 // pin-app and pin-cli may open the same database right after an upgrade, so the version is

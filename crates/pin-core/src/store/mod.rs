@@ -9,6 +9,7 @@ mod entries;
 mod pins;
 mod search;
 mod sql;
+mod thumbnails;
 
 pub(crate) use entries::{delete_entry, load_formats};
 

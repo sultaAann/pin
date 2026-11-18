@@ -10,6 +10,7 @@ mod paths;
 mod random;
 mod schema;
 mod store;
+mod thumbnail;
 mod vault;
 
 pub use error::{Error, KeychainFailure, Result};
@@ -18,6 +19,7 @@ pub use keychain::{KeyStore, Keychain};
 pub use model::{Entry, EntryId, Format, FormatKind, NewEntry, Pin, PinSlot, Timestamp};
 pub use paths::default_database_path;
 pub use store::{Options, Store};
+pub use thumbnail::Thumbnail;
 pub use vault::{
     KdfParams, MasterPassword, NewSecret, RecoveryKey, Secret, SecretId, SecretLabel, Vault,
     VaultOptions, VaultStatus,

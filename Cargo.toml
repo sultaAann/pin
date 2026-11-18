@@ -20,11 +20,12 @@ directories = "6"
 eframe = "0.37"
 egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
 getrandom = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
 global-hotkey = "0.10"
 keyring-core = "1"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSBitmapImageRep", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSWorkspace"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString", "NSURL"] }
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 windows-native-keyring-store = { version = "1", default-features = false }
 dbus-secret-service-keyring-store = { version = "1", features = ["vendored", "crypto-openssl"] }

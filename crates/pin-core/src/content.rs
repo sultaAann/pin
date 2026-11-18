@@ -37,8 +37,8 @@ fn len_u64(len: usize) -> u64 {
 
 pub(crate) fn primary_kind(formats: &[Format]) -> FormatKind {
     const PRIORITY: [FormatKind; 5] = [
-        FormatKind::Files,
         FormatKind::Png,
+        FormatKind::Files,
         FormatKind::Text,
         FormatKind::Html,
         FormatKind::Rtf,
@@ -76,7 +76,14 @@ fn into_string_lossy(bytes: Vec<u8>) -> String {
 
 pub(crate) fn preview(formats: &[Format], kind: &FormatKind) -> String {
     match kind {
-        FormatKind::Png => "Image".to_owned(),
+        FormatKind::Png => {
+            let name =
+                find(formats, &FormatKind::Files).map_or_else(|| "Image".to_owned(), files_preview);
+            match find(formats, kind).and_then(crate::thumbnail::png_size) {
+                Some((w, h)) => format!("{name} \u{00B7} {w}\u{00D7}{h}"),
+                None => name,
+            }
+        }
         FormatKind::Files => files_preview(find(formats, kind).unwrap_or_default()),
         FormatKind::Text | FormatKind::Html | FormatKind::Rtf | FormatKind::Other(_) => {
             find(formats, &FormatKind::Text)
