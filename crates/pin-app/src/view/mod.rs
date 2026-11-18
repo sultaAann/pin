@@ -52,7 +52,7 @@ impl App {
                     self.filters(ui, &palette);
                 }
                 divider(ui, &palette);
-                let body_height = ui.available_height() - FOOTER_HEIGHT - 1.0;
+                let body_height = (ui.available_height() - FOOTER_HEIGHT - 1.0).max(0.0);
                 ui.allocate_ui(vec2(ui.available_width(), body_height), |ui| {
                     let chosen = if self.sheet.is_some() {
                         self.sheet_ui(ui, &palette)
@@ -161,10 +161,15 @@ impl App {
             return None;
         }
         let height = ui.available_height();
+        // Each column needs its own top-down layout: allocate_ui keeps the parent's horizontal one.
+        let column = Layout::top_down(Align::Min);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
             let command = ui
-                .allocate_ui(vec2(LIST_WIDTH, height), |ui| self.list(ui, palette))
+                .allocate_ui_with_layout(vec2(LIST_WIDTH, height), column, |ui| {
+                    ui.set_width(LIST_WIDTH);
+                    self.list(ui, palette)
+                })
                 .inner;
             let (rect, _) = ui.allocate_exact_size(vec2(1.0, height), Sense::hover());
             ui.painter().vline(
@@ -172,7 +177,9 @@ impl App {
                 rect.y_range(),
                 Stroke::new(1.0, palette.separator),
             );
-            ui.allocate_ui(vec2(ui.available_width(), height), |ui| {
+            let width = ui.available_width();
+            ui.allocate_ui_with_layout(vec2(width, height), column, |ui| {
+                ui.set_width(width);
                 self.preview_pane(ui, palette);
             });
             command
@@ -445,7 +452,7 @@ fn empty(
     extra: impl FnOnce(&mut egui::Ui),
 ) {
     ui.vertical_centered(|ui| {
-        ui.add_space(ui.available_height() / 2.0 - 64.0);
+        ui.add_space((ui.available_height() / 2.0 - 64.0).max(0.0));
         let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
         ui.painter().rect_filled(rect, 12.0, palette.icon);
         icons::paint(
@@ -474,3 +481,4 @@ fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {
 pub fn transparent() -> [f32; 4] {
     Color32::TRANSPARENT.to_normalized_gamma_f32()
 }
+https://terminals-admin.alif

@@ -256,7 +256,7 @@ impl Pane<'_> {
             ("Size", format::size(self.entry.size)),
             ("Formats", formats),
         ];
-        let width = (ui.available_width() - 16.0) / 2.0;
+        let width = ((ui.available_width() - 16.0) / 2.0).max(0.0);
         for (index, pair) in cells.chunks(2).enumerate() {
             if index > 0 {
                 ui.add_space(10.0);
