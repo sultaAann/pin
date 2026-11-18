@@ -1,3 +1,5 @@
+mod actions;
+mod preview;
 mod thumbs;
 mod vault;
 
@@ -6,7 +8,11 @@ use std::sync::mpsc::{self, Receiver};
 use anyhow::Context as _;
 use eframe::egui;
 use pin_clipboard::{Clipboard, DEFAULT_INTERVAL, Privacy, WatchHandle};
-use pin_core::{Entry, EntryId, Keychain, Options, PinSlot, Secret, SecretId, Store, VaultStatus};
+use pin_core::{
+    Entry, EntryId, Filter, Keychain, Options, PinSlot, Secret, SecretId, Store, VaultStatus,
+};
+
+pub use self::actions::{Actions, EntryAction, Item, Page, entry_items};
 
 use crate::events::{Event, Events};
 use crate::hotkeys::{Action, Hotkeys};
@@ -62,7 +68,10 @@ pub struct App {
     clipboard: Option<Clipboard>,
     events: Receiver<Event>,
     pub(crate) query: String,
+    pub(crate) filter: Filter,
     pub(crate) entries: Vec<Entry>,
+    preview: Option<preview::Preview>,
+    pub(crate) actions: Option<Actions>,
     pub(crate) selected: usize,
     pub(crate) focus: Focus,
     pub(crate) error: Option<String>,
@@ -115,7 +124,10 @@ impl App {
             clipboard,
             events: rx,
             query: String::new(),
+            filter: Filter::All,
             entries: Vec::new(),
+            preview: None,
+            actions: None,
             selected: 0,
             focus: Focus::Search,
             error: None,
@@ -169,18 +181,23 @@ impl App {
             return;
         }
         self.leave_secrets();
-        let query = self.query.trim();
-        let entries = if query.is_empty() {
-            self.store.recent(LIST_LIMIT, 0)
-        } else {
-            self.store.search(query, LIST_LIMIT)
-        };
-        match entries {
+        match self.store.search(&self.query, self.filter, LIST_LIMIT) {
             Ok(entries) => self.entries = entries,
             Err(err) => self.report(&err),
         }
         self.prune_thumbnails();
+        self.prune_preview();
+        self.prune_actions();
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
+    }
+
+    pub(crate) fn set_filter(&mut self, filter: Filter) {
+        if self.filter != filter {
+            self.filter = filter;
+            self.selected = 0;
+            self.scroll_to_selected = true;
+            self.refresh();
+        }
     }
 
     pub(crate) fn run(&mut self, ctx: &egui::Context, command: Command) {
@@ -301,6 +318,8 @@ impl App {
         self.window = Window::Shown { had_focus: false };
         self.focus = Focus::Search;
         self.query.clear();
+        self.filter = Filter::All;
+        self.actions = None;
         self.error = None;
         self.selected = 0;
         self.scroll_to_selected = true;
@@ -313,6 +332,8 @@ impl App {
 
     fn hide(&mut self, ctx: &egui::Context) {
         platform::yield_focus();
+        self.actions = None;
+        self.drop_preview();
         if self.reopen == Reopen::Dock {
             self.window = Window::Shown { had_focus: false };
             return;

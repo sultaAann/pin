@@ -1,6 +1,7 @@
 use eframe::egui::{self, Key, Modifiers};
+use pin_core::Filter;
 
-use crate::app::{App, Command, SheetAction};
+use crate::app::{App, Command, EntryAction, SheetAction};
 
 const NUMBERS: [Key; 9] = [
     Key::Num1,
@@ -30,6 +31,28 @@ impl App {
         if self.sheet.is_some() {
             return pressed(Key::Escape, Modifiers::NONE)
                 .then_some(Command::Sheet(SheetAction::Cancel));
+        }
+        if pressed(Key::Enter, Modifiers::COMMAND) {
+            self.toggle_actions();
+            return None;
+        }
+        if self.actions.is_some() {
+            return self.actions_keyboard(&pressed);
+        }
+        if !self.secrets_mode() {
+            let step = if pressed(Key::Tab, Modifiers::SHIFT) {
+                Some(Filter::ALL.len() - 1)
+            } else {
+                pressed(Key::Tab, Modifiers::NONE).then_some(1)
+            };
+            if let Some(step) = step {
+                let current = Filter::ALL
+                    .iter()
+                    .position(|&f| f == self.filter)
+                    .unwrap_or(0);
+                self.set_filter(Filter::ALL[(current + step) % Filter::ALL.len()]);
+                return None;
+            }
         }
         if pressed(Key::ArrowUp, Modifiers::NONE) {
             self.select(self.selected.saturating_sub(1));
@@ -74,6 +97,44 @@ impl App {
         } else {
             None
         }
+    }
+
+    fn actions_keyboard(&mut self, pressed: &impl Fn(Key, Modifiers) -> bool) -> Option<Command> {
+        if pressed(Key::Escape, Modifiers::NONE) {
+            self.actions_back();
+            return None;
+        }
+        // Tab would move focus out of the panel's search field into the main search.
+        pressed(Key::Tab, Modifiers::SHIFT);
+        pressed(Key::Tab, Modifiers::NONE);
+        let pinned = self.actions_entry()?.pin.is_pinned();
+        let shortcut = if pressed(Key::P, Modifiers::COMMAND) {
+            Some(EntryAction::Pin(!pinned))
+        } else if pressed(Key::S, Modifiers::COMMAND) {
+            Some(EntryAction::MoveToSecrets)
+        } else if pressed(Key::Backspace, Modifiers::COMMAND) {
+            Some(EntryAction::Delete)
+        } else {
+            None
+        };
+        if let Some(action) = shortcut {
+            return self.choose(action);
+        }
+        let items = self.action_items();
+        let actions = self.actions.as_mut()?;
+        let last = items.len().saturating_sub(1);
+        actions.highlighted = actions.highlighted.min(last);
+        if pressed(Key::ArrowUp, Modifiers::NONE) {
+            actions.highlighted = actions.highlighted.saturating_sub(1);
+        }
+        if pressed(Key::ArrowDown, Modifiers::NONE) {
+            actions.highlighted = (actions.highlighted + 1).min(last);
+        }
+        if pressed(Key::Enter, Modifiers::NONE) {
+            let action = items.get(actions.highlighted)?.action;
+            return self.choose(action);
+        }
+        None
     }
 
     pub(super) fn select(&mut self, index: usize) {

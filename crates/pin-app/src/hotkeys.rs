@@ -25,6 +25,10 @@ const SLOT: Modifiers = Modifiers::CONTROL.union(Modifiers::ALT);
 #[cfg(not(target_os = "macos"))]
 pub const SLOT_LABEL: &str = "Ctrl+Alt+";
 
+pub fn slot_label(slot: PinSlot) -> String {
+    format!("{SLOT_LABEL}{}", slot.get())
+}
+
 const DIGITS: [Code; 9] = [
     Code::Digit1,
     Code::Digit2,

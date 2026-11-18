@@ -1,4 +1,6 @@
-use pin_core::{Entry, FormatKind, Timestamp};
+use pin_core::{Entry, Filter, FormatKind, Timestamp};
+
+use super::icons::Icon;
 
 pub fn title(entry: &Entry) -> &str {
     entry
@@ -9,29 +11,75 @@ pub fn title(entry: &Entry) -> &str {
         .unwrap_or_else(|| entry.kind.as_str())
 }
 
-pub fn icon(entry: &Entry) -> &'static str {
+pub fn icon(entry: &Entry) -> Icon {
     match entry.kind {
-        FormatKind::Png => "\u{1F5BC}",
-        FormatKind::Files => "\u{1F4C1}",
-        FormatKind::Html | FormatKind::Rtf => "\u{1F4DD}",
-        FormatKind::Text if is_link(title(entry)) => "\u{1F517}",
-        FormatKind::Text => "\u{1F4C4}",
-        FormatKind::Other(_) => "\u{1F4CB}",
+        FormatKind::Png => Icon::Image,
+        FormatKind::Files => Icon::Folder,
+        FormatKind::Html | FormatKind::Rtf => Icon::Rich,
+        FormatKind::Text if Filter::Links.matches(entry) => Icon::Link,
+        FormatKind::Text => Icon::Text,
+        FormatKind::Other(_) => Icon::Clipboard,
     }
 }
 
-fn is_link(text: &str) -> bool {
-    !text.contains(char::is_whitespace)
-        && (text.starts_with("https://") || text.starts_with("http://"))
-}
-
-pub fn details(entry: &Entry, now: Timestamp) -> String {
+pub fn subtitle(entry: &Entry, now: Timestamp) -> String {
     let when = relative(now, entry.last_used_at);
-    let size = size(entry.size);
     match &entry.source_app {
-        Some(app) => format!("{app} \u{00B7} {when} \u{00B7} {size}"),
-        None => format!("{when} \u{00B7} {size}"),
+        Some(app) => format!("{app} \u{00B7} {when}"),
+        None => when,
     }
+}
+
+pub fn kind_label(entry: &Entry, files: usize) -> String {
+    match entry.kind {
+        FormatKind::Png => "Image".to_owned(),
+        FormatKind::Files if files == 1 => "1 File".to_owned(),
+        FormatKind::Files => format!("{files} Files"),
+        FormatKind::Html | FormatKind::Rtf => "Rich Text".to_owned(),
+        FormatKind::Text if Filter::Links.matches(entry) => "Link".to_owned(),
+        FormatKind::Text => "Plain Text".to_owned(),
+        FormatKind::Other(_) => "Clipboard Data".to_owned(),
+    }
+}
+
+pub fn format_name(kind: &FormatKind) -> &str {
+    match kind {
+        FormatKind::Text => "Plain Text",
+        FormatKind::Html => "HTML",
+        FormatKind::Rtf => "RTF",
+        FormatKind::Png => "PNG",
+        FormatKind::Files => "File URLs",
+        FormatKind::Other(mime) => mime,
+    }
+}
+
+pub fn filter_label(filter: Filter) -> &'static str {
+    match filter {
+        Filter::All => "All",
+        Filter::Text => "Text",
+        Filter::Links => "Links",
+        Filter::Images => "Images",
+        Filter::Files => "Files",
+        Filter::Pinned => "Pinned",
+    }
+}
+
+/// Plural noun for the empty state of `filter`, e.g. "No images in your clipboard history".
+pub fn filter_noun(filter: Filter) -> &'static str {
+    match filter {
+        Filter::All => "items",
+        Filter::Text => "text",
+        Filter::Links => "links",
+        Filter::Images => "images",
+        Filter::Files => "files",
+        Filter::Pinned => "pinned items",
+    }
+}
+
+/// Host of a bare URL, for the link preview header.
+pub fn domain(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', '?', '#']).next().unwrap_or(rest)
 }
 
 pub fn relative(now: Timestamp, then: Timestamp) -> String {
@@ -44,7 +92,7 @@ pub fn relative(now: Timestamp, then: Timestamp) -> String {
     }
 }
 
-fn size(bytes: u64) -> String {
+pub fn size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     match bytes {
@@ -76,9 +124,12 @@ mod tests {
     }
 
     #[test]
-    fn only_bare_urls_count_as_links() {
-        assert!(is_link("https://example.com/a"));
-        assert!(!is_link("see https://example.com"));
-        assert!(!is_link("example.com"));
+    fn domain_is_the_host_of_a_url() {
+        assert_eq!(
+            domain("https://doc.rust-lang.org/std/"),
+            "doc.rust-lang.org"
+        );
+        assert_eq!(domain("http://example.com?q=1"), "example.com");
+        assert_eq!(domain("https://crates.io"), "crates.io");
     }
 }

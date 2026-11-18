@@ -2,6 +2,7 @@ use eframe::egui::{self, Align, Color32, FontId, Key, Layout, RichText, Sense, T
 use pin_core::{Secret, Timestamp};
 
 use super::format;
+use super::icons::Icon;
 use super::row::{HEIGHT, Look, index_hint, title};
 use super::theme::Palette;
 use crate::app::{App, Command, LabelTarget, Sheet, SheetAction};
@@ -24,7 +25,7 @@ impl App {
                     "Right-click an item in history and choose Move to Secrets.",
                 )
             };
-            super::empty(ui, palette, KEY_GLYPH, headline, subtitle);
+            super::empty(ui, palette, Icon::Key, headline, subtitle, |_| {});
             return None;
         }
         let mut command = None;
@@ -319,7 +320,7 @@ impl SecretRow<'_> {
                 selected,
                 response.hovered(),
                 palette,
-                KEY_GLYPH,
+                Icon::Key,
             );
             let right = index_hint(&painter, rect, index, look.secondary);
             title(&painter, rect, look.left, right, &secret.name, look.text);
