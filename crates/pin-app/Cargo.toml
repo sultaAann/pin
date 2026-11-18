@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 eframe.workspace = true
 pin-core.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

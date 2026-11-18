@@ -21,8 +21,12 @@ apple-native-keyring-store = { version = "1", features = ["keychain"] }
 windows-native-keyring-store = { version = "1", default-features = false }
 dbus-secret-service-keyring-store = { version = "1", features = ["vendored", "crypto-openssl"] }
 rusqlite = "0.43"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1.9"
 tempfile = "3.27"
 thiserror = "2.0"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
 zeroize = "1.9"
 
 [workspace.lints.rust]
@@ -40,6 +44,10 @@ expect_used = "warn"
 dbg_macro = "warn"
 todo = "warn"
 print_stdout = "warn"
+print_stderr = "warn"
+allow_attributes = "warn"
+redundant_clone = "warn"
+mem_forget = "warn"
 
 [profile.release]
 opt-level = 3
