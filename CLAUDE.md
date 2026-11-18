@@ -29,8 +29,8 @@ Before finishing a change: fmt, clippy with `-D warnings`, tests must pass.
 - Storage: SQLCipher (rusqlite `bundled-sqlcipher`; CommonCrypto on macOS, vendored OpenSSL elsewhere), raw 32-byte key, WAL, `secure_delete = ON`, `temp_store = MEMORY`. Plaintext never touches disk (no temp files, no unencrypted caches or thumbnails). Write paths use IMMEDIATE transactions because pin-app and pin-cli share the database.
 - Search: FTS5 trigram over plain text or decoded file paths (first 64 KiB) for queries of 3+ chars; 1–2 char queries scan previews with Unicode case folding.
 - Ordering: pinned first, then `use_seq` (monotonic counter bumped on copy/paste), not wall-clock time.
-- Key: random data key generated on first run, stored in the OS keychain (`keyring`: Keychain / Secret Service / Credential Manager).
-- Secrets: separate vault, encrypted with a key derived from a master password (Argon2id). Secrets are never put into the search index, history list, logs or the CLI output unless explicitly unlocked. Zeroize key material and decrypted secrets after use.
+- Key: random data key generated on first run, stored in the OS keychain via `keyring-core` with one store per OS (macOS Keychain, Windows Credential Manager, Secret Service over synchronous libdbus on Linux — no zbus/async runtime). Apps open the database with `Store::open_with(path, &Keychain, ..)`: a `pin.db.lock` file lock serialises first runs, and a missing key next to an existing database is an error, never a silent new key.
+- Secrets: vault tables in the same database. A random vault key is wrapped twice: by an Argon2id key from the master password and by a recovery key shown once at vault creation and replaced after each use. The vault is reached through `store.vault()` (`crates/pin-core/src/vault/`); its key never leaves `vault::Session`. Secret name, note and every format are sealed separately with XChaCha20-Poly1305 under the vault key; AAD binds the vault uid and secret uid. The database key alone does not reveal secrets. The vault auto-locks after 5 minutes idle (`Options::vault.auto_lock`); a key from a vault reset by another process is dropped on next use. Secrets are never put into the search index, history list, logs or the CLI output unless explicitly unlocked. Zeroize key material and decrypted secrets after use.
 - Pins: pinned entries are exempt from history limits and sorted on top; a pin can have a paste hotkey.
 - Dedup: identical content (by hash) bumps the existing entry instead of inserting a new one.
 
@@ -54,4 +54,4 @@ pin runs all the time, so idle cost matters more than peak speed.
 - No `unwrap`/`expect` outside tests; errors via `thiserror` in libraries, `anyhow` only in binaries.
 - No comments except a short WHY for a non-obvious constraint or workaround.
 - Shared dependency versions go in `[workspace.dependencies]`.
-- Never log clipboard contents or secrets, even at debug level.
+- Never log clipboard contents or secrets, even at debug level. Types holding content or key material get a hand-written `Debug` that omits it.
