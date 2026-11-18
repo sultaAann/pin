@@ -3,6 +3,9 @@ use std::fmt::Write as _;
 
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::error::{Error, Result};
+use crate::random;
+
 pub struct Key([u8; Key::LEN]);
 
 impl Key {
@@ -12,6 +15,17 @@ impl Key {
         let key = Self(*bytes);
         bytes.zeroize();
         key
+    }
+
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let mut array: [u8; Self::LEN] = bytes.try_into().map_err(|_| Error::InvalidKeyLength)?;
+        Ok(Self::from_bytes(&mut array))
+    }
+
+    pub fn generate() -> Result<Self> {
+        let mut bytes = [0u8; Self::LEN];
+        random::fill(&mut bytes)?;
+        Ok(Self::from_bytes(&mut bytes))
     }
 
     pub fn as_bytes(&self) -> &[u8; Self::LEN] {

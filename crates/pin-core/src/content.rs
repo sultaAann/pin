@@ -1,3 +1,5 @@
+use zeroize::Zeroize;
+
 use crate::model::{Format, FormatKind};
 
 const PREVIEW_CHARS: usize = 200;
@@ -5,7 +7,13 @@ const MAX_INDEXED_BYTES: usize = 64 * 1024;
 
 pub(crate) fn normalize(mut formats: Vec<Format>) -> Vec<Format> {
     formats.sort_by(|a, b| a.kind.cmp(&b.kind));
-    formats.dedup_by(|a, b| a.kind == b.kind);
+    formats.dedup_by(|dropped, kept| {
+        let duplicate = dropped.kind == kept.kind;
+        if duplicate {
+            dropped.data.zeroize();
+        }
+        duplicate
+    });
     formats
 }
 

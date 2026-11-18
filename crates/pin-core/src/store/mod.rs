@@ -2,24 +2,32 @@ mod entries;
 mod pins;
 mod search;
 
-use std::path::Path;
+pub(crate) use entries::{delete_entry, load_formats};
+
+use std::ffi::OsString;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, ErrorCode, Row, Transaction, TransactionBehavior};
 
 use crate::error::{Error, Result};
 use crate::key::Key;
+use crate::keychain::{self, KeyStore};
 use crate::model::{Entry, EntryId, FormatKind, PinSlot, Timestamp};
 use crate::schema;
+use crate::vault::{Session, Vault, VaultOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
     pub history_limit: usize,
+    pub vault: VaultOptions,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             history_limit: 1000,
+            vault: VaultOptions::default(),
         }
     }
 }
@@ -27,9 +35,23 @@ impl Default for Options {
 pub struct Store {
     conn: Connection,
     options: Options,
+    vault: Option<Session>,
 }
 
 impl Store {
+    // The lock file serialises first runs of pin-app and pin-cli: without it both could see no key,
+    // each save its own, and leave the database encrypted with a key the keychain no longer holds.
+    pub fn open_with(path: &Path, keys: &impl KeyStore, options: Options) -> Result<Self> {
+        let lock = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path(path))?;
+        lock.lock()?;
+        let key = keychain::load_or_create(keys, path.try_exists()?)?;
+        Self::open(path, &key, options)
+    }
+
     pub fn open(path: &Path, key: &Key, options: Options) -> Result<Self> {
         let mut conn = Connection::open(path)?;
         conn.execute_batch(&key.sqlcipher_pragma())?;
@@ -47,11 +69,19 @@ impl Store {
         )?;
         search::register_functions(&conn)?;
         schema::migrate(&mut conn)?;
-        Ok(Self { conn, options })
+        Ok(Self {
+            conn,
+            options,
+            vault: None,
+        })
     }
 
     pub fn options(&self) -> Options {
         self.options
+    }
+
+    pub fn vault(&mut self) -> Vault<'_> {
+        Vault::new(&mut self.conn, &mut self.vault, self.options.vault)
     }
 }
 
@@ -75,7 +105,7 @@ fn entry_from_row(row: &Row<'_>) -> rusqlite::Result<Entry> {
 
 // A deferred transaction that reads before writing fails with SQLITE_BUSY_SNAPSHOT, not a
 // retryable SQLITE_BUSY, when pin-app and pin-cli write the same WAL database concurrently.
-fn write_tx(conn: &mut Connection) -> rusqlite::Result<Transaction<'_>> {
+pub(crate) fn write_tx(conn: &mut Connection) -> rusqlite::Result<Transaction<'_>> {
     conn.transaction_with_behavior(TransactionBehavior::Immediate)
 }
 
@@ -107,4 +137,16 @@ fn expect_row(id: EntryId, changed: usize) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+// Best effort: copies scrubbed pages into the database and truncates the WAL so deleted plaintext
+// does not linger in old frames. The change is already committed; a busy reader only delays this.
+pub(crate) fn checkpoint(conn: &Connection) {
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    let mut name = OsString::from(path.as_os_str());
+    name.push(".lock");
+    PathBuf::from(name)
 }

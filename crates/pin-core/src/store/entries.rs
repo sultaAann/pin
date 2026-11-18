@@ -1,4 +1,4 @@
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{ENTRY_COLUMNS, Store, entry_from_row, expect_row, next_seq, prune, to_i64, write_tx};
 use crate::content;
@@ -77,21 +77,7 @@ impl Store {
     }
 
     pub fn formats(&self, id: EntryId) -> Result<Vec<Format>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT kind, data FROM formats WHERE entry_id = ?1 ORDER BY kind")?;
-        let formats = stmt
-            .query_map([id.0], |row| {
-                Ok(Format {
-                    kind: FormatKind::parse(&row.get::<_, String>(0)?),
-                    data: row.get(1)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if formats.is_empty() {
-            self.get(id)?;
-        }
-        Ok(formats)
+        load_formats(&self.conn, id)
     }
 
     pub fn recent(&self, limit: usize, offset: usize) -> Result<Vec<Entry>> {
@@ -118,10 +104,7 @@ impl Store {
     }
 
     pub fn delete(&mut self, id: EntryId) -> Result<()> {
-        let changed = self
-            .conn
-            .execute("DELETE FROM entries WHERE id = ?1", [id.0])?;
-        expect_row(id, changed)
+        delete_entry(&self.conn, id)
     }
 
     pub fn clear_history(&mut self) -> Result<usize> {
@@ -134,4 +117,33 @@ impl Store {
         tx.commit()?;
         Ok(removed)
     }
+}
+
+pub(crate) fn load_formats(conn: &Connection, id: EntryId) -> Result<Vec<Format>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT kind, data FROM formats WHERE entry_id = ?1 ORDER BY kind")?;
+    let formats = stmt
+        .query_map([id.0], |row| {
+            Ok(Format {
+                kind: FormatKind::parse(&row.get::<_, String>(0)?),
+                data: row.get(1)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if formats.is_empty() {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM entries WHERE id = ?1)",
+            [id.0],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(Error::NotFound(id));
+        }
+    }
+    Ok(formats)
+}
+
+pub(crate) fn delete_entry(conn: &Connection, id: EntryId) -> Result<()> {
+    let changed = conn.execute("DELETE FROM entries WHERE id = ?1", [id.0])?;
+    expect_row(id, changed)
 }
