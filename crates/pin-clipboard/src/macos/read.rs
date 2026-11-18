@@ -2,13 +2,17 @@ use objc2::rc::Retained;
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardItem, NSWorkspace,
 };
-use std::path::PathBuf;
-
 use objc2_foundation::{NSData, NSDictionary, NSString, NSURL};
 use pin_core::{Format, FormatKind, NewEntry};
 
-use super::{AUTO_GENERATED, CONCEALED, FILE_URL, HTML, PNG, RTF, TEXT, TIFF, TRANSIENT};
+use super::{
+    AUTO_GENERATED, CONCEALED, FILE_URL, HEIC, HTML, JPEG, PNG, RTF, TEXT, TIFF, TRANSIENT,
+};
 use crate::{Capture, Skip};
+
+const REFERENCE_PREFIX: &[u8] = b"file:///.file/id=";
+
+const ENCODED_IMAGES: [&str; 3] = [TIFF, JPEG, HEIC];
 
 const IMAGE_EXTENSIONS: [&str; 11] = [
     "png", "jpg", "jpeg", "heic", "heif", "gif", "tif", "tiff", "bmp", "webp", "avif",
@@ -91,13 +95,8 @@ fn formats(
                 }
             }
             None => {
-                if has(types, TIFF)
-                    && let Some(tiff) = first.dataForType(&NSString::from_str(TIFF))
-                {
-                    budget.check(&tiff)?;
-                    if let Some(png) = to_png(&tiff) {
-                        formats.push(Format::new(FormatKind::Png, budget.take(&png)?));
-                    }
+                if let Some(png) = encoded_image(first, types, budget)? {
+                    formats.push(Format::new(FormatKind::Png, png));
                 }
             }
         }
@@ -106,6 +105,25 @@ fn formats(
         formats.push(Format::new(FormatKind::Files, files));
     }
     Ok(formats)
+}
+
+/// Images that arrive only as TIFF, JPEG or HEIC data (screenshots, Preview, Photos), as PNG.
+fn encoded_image(
+    first: &NSPasteboardItem,
+    types: &[String],
+    budget: &mut Budget,
+) -> Result<Option<Vec<u8>>, TooLarge> {
+    for uti in ENCODED_IMAGES {
+        if has(types, uti)
+            && let Some(data) = first.dataForType(&NSString::from_str(uti))
+        {
+            budget.check(&data)?;
+            if let Some(png) = to_png(&data) {
+                return budget.take(&png).map(Some);
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn file_list(
@@ -119,12 +137,27 @@ fn file_list(
             let url = budget.take(&data)?;
             let url = url.strip_suffix(&[0]).unwrap_or(&url);
             if url.starts_with(b"file:") {
-                list.extend_from_slice(url);
+                list.extend_from_slice(path_url(url).as_deref().unwrap_or(url));
                 list.extend_from_slice(b"\r\n");
             }
         }
     }
     Ok((!list.is_empty()).then_some(list))
+}
+
+// Finder copies file reference URLs (file:///.file/id=…): they name no path to show or search,
+// and they stop resolving on another volume, so they are stored as the path they point to.
+fn path_url(url: &[u8]) -> Option<Vec<u8>> {
+    if !url.starts_with(REFERENCE_PREFIX) {
+        return None;
+    }
+    let url = NSURL::URLWithString(&NSString::from_str(std::str::from_utf8(url).ok()?))?;
+    Some(
+        url.filePathURL()?
+            .absoluteString()?
+            .to_string()
+            .into_bytes(),
+    )
 }
 
 // Apps like Telegram copy an image as a link to a file only; the picture itself is kept so it
@@ -137,7 +170,7 @@ fn single_image_file(list: &[u8], budget: &mut Budget) -> Result<Option<Vec<u8>>
     let (Some(url), None) = (urls.next(), urls.next()) else {
         return Ok(None);
     };
-    let Some(path) = file_path(url) else {
+    let Some(path) = super::file_path(url) else {
         return Ok(None);
     };
     let extension = path
@@ -167,12 +200,6 @@ fn single_image_file(list: &[u8], budget: &mut Budget) -> Result<Option<Vec<u8>>
     };
     budget.reserve(png.len())?;
     Ok(Some(png))
-}
-
-fn file_path(url: &[u8]) -> Option<PathBuf> {
-    let url = NSURL::URLWithString(&NSString::from_str(std::str::from_utf8(url).ok()?))?;
-    let path = url.filePathURL()?.path()?;
-    Some(PathBuf::from(path.to_string()))
 }
 
 fn to_png(image: &NSData) -> Option<Retained<NSData>> {

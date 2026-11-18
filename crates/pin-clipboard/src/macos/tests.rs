@@ -1,5 +1,5 @@
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
-use objc2_foundation::{NSData, NSDictionary, NSString};
+use objc2_foundation::{NSData, NSDictionary, NSString, NSURL};
 use pin_core::{Format, FormatKind};
 
 use super::*;
@@ -25,6 +25,20 @@ fn kinds(formats: &[Format]) -> Vec<FormatKind> {
     formats.iter().map(|f| f.kind.clone()).collect()
 }
 
+/// A fresh directory with empty files `names`; links written back must point at real files.
+fn temp_files(test: &str, names: &[&str]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("pin-clip-{}-{test}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in names {
+        std::fs::write(dir.join(name), b"x").unwrap();
+    }
+    dir
+}
+
+fn url(dir: &std::path::Path, name: &str) -> String {
+    format!("file://{}/{}", dir.display(), name.replace(' ', "%20"))
+}
+
 #[test]
 fn written_formats_read_back_as_one_entry() {
     let clipboard = Clipboard::unique();
@@ -41,13 +55,80 @@ fn written_formats_read_back_as_one_entry() {
 
 #[test]
 fn files_roundtrip_as_uri_list() {
+    let dir = temp_files("roundtrip", &["a b.txt", "c.txt"]);
     let clipboard = Clipboard::unique();
-    let list = "file:///tmp/a%20b.txt\r\nfile:///tmp/c.txt\r\n";
+    let list = format!("{}\r\n{}\r\n", url(&dir, "a b.txt"), url(&dir, "c.txt"));
     clipboard
-        .write(&[Format::new(FormatKind::Files, list)], Privacy::Normal)
+        .write(
+            &[Format::new(FormatKind::Files, list.as_str())],
+            Privacy::Normal,
+        )
         .unwrap();
     let formats = entry(clipboard.read());
-    assert_eq!(formats, [Format::new(FormatKind::Files, list)]);
+    assert_eq!(formats, [Format::new(FormatKind::Files, list.as_str())]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn file_reference_urls_are_stored_as_paths() {
+    let dir = temp_files("reference", &["report.txt"]);
+    let path = dir.join("report.txt");
+    let reference = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()))
+        .fileReferenceURL()
+        .unwrap()
+        .absoluteString()
+        .unwrap()
+        .to_string();
+    assert!(reference.starts_with("file:///.file/id="), "{reference}");
+    let clipboard = Clipboard::unique();
+    clipboard.board.clearContents();
+    assert!(clipboard.board.setData_forType(
+        Some(&NSData::with_bytes(reference.as_bytes())),
+        &NSString::from_str(FILE_URL)
+    ));
+    let formats = entry(clipboard.read());
+    let list = String::from_utf8(formats[0].data.clone()).unwrap();
+    assert!(list.starts_with("file:///"), "{list}");
+    assert!(!list.contains("/.file/id="), "{list}");
+    assert!(list.ends_with("/report.txt\r\n"), "{list}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn links_to_missing_files_are_not_written_back() {
+    let clipboard = Clipboard::unique();
+    let gone = Format::new(FormatKind::Files, "file:///nonexistent/pin-gone.txt\r\n");
+    assert!(matches!(
+        clipboard.write(std::slice::from_ref(&gone), Privacy::Normal),
+        Err(crate::Error::NothingToWrite)
+    ));
+    clipboard
+        .write(
+            &[Format::new(FormatKind::Text, "pin-gone.txt"), gone],
+            Privacy::Normal,
+        )
+        .unwrap();
+    assert_eq!(kinds(&entry(clipboard.read())), [FormatKind::Text]);
+}
+
+#[test]
+fn jpeg_only_images_are_stored_as_png() {
+    let rep = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(TINY_PNG)).unwrap();
+    // SAFETY: an empty dictionary is a valid properties argument.
+    let jpeg = unsafe {
+        rep.representationUsingType_properties(NSBitmapImageFileType::JPEG, &NSDictionary::new())
+    }
+    .unwrap();
+    let clipboard = Clipboard::unique();
+    clipboard.board.clearContents();
+    assert!(
+        clipboard
+            .board
+            .setData_forType(Some(&jpeg), &NSString::from_str(JPEG))
+    );
+    let formats = entry(clipboard.read());
+    assert_eq!(kinds(&formats), [FormatKind::Png]);
+    assert!(formats[0].data.starts_with(PNG_SIGNATURE));
 }
 
 #[test]
@@ -105,12 +186,14 @@ fn tiff_only_images_are_stored_as_png() {
 
 #[test]
 fn private_marker_on_any_item_skips_the_copy() {
+    let dir = temp_files("private", &["a", "b"]);
     let clipboard = Clipboard::unique();
+    let list = format!("{}\r\n{}\r\n", url(&dir, "a"), url(&dir, "b"));
     clipboard
         .write(
             &[
                 Format::new(FormatKind::Text, "a"),
-                Format::new(FormatKind::Files, "file:///a\r\nfile:///b\r\n"),
+                Format::new(FormatKind::Files, list.as_str()),
             ],
             Privacy::Normal,
         )
@@ -118,6 +201,7 @@ fn private_marker_on_any_item_skips_the_copy() {
     let items = clipboard.board.pasteboardItems().unwrap().to_vec();
     assert!(items[1].setData_forType(&NSData::new(), &NSString::from_str(CONCEALED)));
     assert_eq!(clipboard.read(), Capture::Skipped(Skip::Private));
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

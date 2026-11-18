@@ -1,8 +1,11 @@
 mod read;
 mod write;
 
+use std::path::PathBuf;
+
 use objc2::rc::{Retained, autoreleasepool};
 use objc2_app_kit::NSPasteboard;
+use objc2_foundation::{NSString, NSURL};
 use pin_core::Format;
 
 use crate::{Capture, ChangeCount, MAX_CAPTURE_BYTES, Privacy, Result};
@@ -12,6 +15,8 @@ const HTML: &str = "public.html";
 const RTF: &str = "public.rtf";
 const PNG: &str = "public.png";
 const TIFF: &str = "public.tiff";
+const JPEG: &str = "public.jpeg";
+const HEIC: &str = "public.heic";
 const FILE_URL: &str = "public.file-url";
 const CONCEALED: &str = "org.nspasteboard.ConcealedType";
 const TRANSIENT: &str = "org.nspasteboard.TransientType";
@@ -74,6 +79,13 @@ impl Clipboard {
             limit: other.limit,
         }
     }
+}
+
+/// Local path of a `file:` URL, including file reference URLs while their file exists.
+fn file_path(url: &[u8]) -> Option<PathBuf> {
+    let url = NSURL::URLWithString(&NSString::from_str(std::str::from_utf8(url).ok()?))?;
+    let path = url.filePathURL()?.path()?;
+    Some(PathBuf::from(path.to_string()))
 }
 
 #[cfg(test)]

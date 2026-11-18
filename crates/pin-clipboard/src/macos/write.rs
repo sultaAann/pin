@@ -47,10 +47,11 @@ fn write_files(items: &mut Vec<Retained<NSPasteboardItem>>, list: &[u8]) -> Resu
     let Ok(list) = std::str::from_utf8(list) else {
         return Ok(false);
     };
-    let uris = list
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with("file:"));
+    // A link to a deleted or unmounted file would paste nothing, so it is left out.
+    let uris = list.lines().map(str::trim).filter(|line| {
+        line.starts_with("file:")
+            && super::file_path(line.as_bytes()).is_some_and(|path| path.symlink_metadata().is_ok())
+    });
     let mut written = false;
     for (index, uri) in uris.enumerate() {
         if index >= items.len() {
