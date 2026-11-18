@@ -16,6 +16,9 @@
       "Bash(git log:*)",
       "Bash(git show:*)",
       "Bash(git branch:*)"
+    ],
+    "deny": [
+      "mcp__claude_ai_Linear"
     ]
   }
 }
