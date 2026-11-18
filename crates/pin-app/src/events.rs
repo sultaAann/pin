@@ -1,13 +1,14 @@
 use std::sync::mpsc::Sender;
 
 use eframe::egui;
-use pin_core::NewEntry;
+use pin_core::{EntryId, NewEntry, Thumbnail};
 
 use crate::hotkeys::Action;
 
 pub enum Event {
     Captured(NewEntry),
     Hotkey(Action),
+    Thumbnail(EntryId, Option<Thumbnail>),
 }
 
 #[derive(Clone)]

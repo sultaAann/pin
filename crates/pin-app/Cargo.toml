@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+thiserror.workspace = true
 eframe.workspace = true
 # Tintable icon glyphs; on macOS emoji would otherwise come from the colour Apple Color Emoji font.
 egui.workspace = true
@@ -17,6 +18,7 @@ pin-clipboard.workspace = true
 pin-core.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

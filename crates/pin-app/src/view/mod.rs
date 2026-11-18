@@ -2,6 +2,7 @@ mod format;
 mod keys;
 mod row;
 mod theme;
+mod vault;
 
 use eframe::egui::{self, Align, Color32, FontId, Layout, RichText, ScrollArea, TextEdit, vec2};
 use pin_core::Timestamp;
@@ -18,6 +19,10 @@ const FOOTER_HEIGHT: f32 = 32.0;
 impl App {
     pub(crate) fn show_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if std::mem::take(&mut self.forget_text_state) {
+            // egui keeps undo history of every text field; drop it so typed passwords don't linger.
+            ctx.data_mut(egui::util::IdTypeMap::remove_by_type::<egui::text_edit::TextEditState>);
+        }
         self.intercept_close(&ctx);
         self.track_focus(&ctx);
         let palette = Palette::of(&ctx);
@@ -33,8 +38,15 @@ impl App {
                 divider(ui, &palette);
                 let list_height = ui.available_height() - FOOTER_HEIGHT - 1.0;
                 ui.allocate_ui(vec2(ui.available_width(), list_height), |ui| {
-                    if let Some(chosen) = self.list(ui, &palette) {
-                        command = Some(chosen);
+                    let chosen = if self.sheet.is_some() {
+                        self.sheet_ui(ui, &palette)
+                    } else if self.secrets_mode() {
+                        self.secret_list(ui, &palette)
+                    } else {
+                        self.list(ui, &palette)
+                    };
+                    if chosen.is_some() {
+                        command = chosen;
                     }
                 });
                 divider(ui, &palette);
@@ -53,21 +65,25 @@ impl App {
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.add_space(18.0);
-                ui.label(
-                    RichText::new("\u{1F50D}")
-                        .size(16.0)
-                        .color(palette.secondary),
-                );
+                let glyph = if self.secrets_mode() {
+                    "\u{1F511}"
+                } else {
+                    "\u{1F50D}"
+                };
+                ui.label(RichText::new(glyph).size(16.0).color(palette.secondary));
                 ui.add_space(10.0);
                 let search = ui.add(
                     TextEdit::singleline(&mut self.query)
-                        .hint_text(RichText::new("Search Clipboard").color(palette.tertiary))
+                        .hint_text(
+                            RichText::new("Search Clipboard \u{00B7} / for Secrets")
+                                .color(palette.tertiary),
+                        )
                         .font(FontId::proportional(19.0))
                         .text_color(palette.text)
                         .frame(egui::Frame::NONE)
                         .desired_width(ui.available_width() - 18.0),
                 );
-                if std::mem::take(&mut self.focus_search) {
+                if self.take_focus(crate::app::Focus::Search) {
                     search.request_focus();
                 }
                 if search.changed() {
@@ -95,17 +111,26 @@ impl App {
             egui::Frame::new()
                 .inner_margin(egui::Margin::symmetric(8, 6))
                 .show(ui, |ui| {
-                    for (index, entry) in self.entries.iter().enumerate() {
+                    for index in 0..self.entries.len() {
                         if sections && index == 0 {
                             section(ui, palette, "Pinned");
                         }
                         if sections
                             && index > 0
-                            && !entry.pin.is_pinned()
+                            && !self.entries[index].pin.is_pinned()
                             && self.entries[index - 1].pin.is_pinned()
                         {
                             section(ui, palette, "Recent");
                         }
+                        let next = egui::Rect::from_min_size(
+                            ui.cursor().min,
+                            vec2(ui.available_width(), row::height(&self.entries[index])),
+                        );
+                        let thumbnail = (self.entries[index].kind == pin_core::FormatKind::Png
+                            && ui.is_rect_visible(next))
+                        .then(|| self.thumbnail(self.entries[index].id))
+                        .flatten();
+                        let entry = &self.entries[index];
                         let selected = index == self.selected;
                         let output = Row {
                             entry,
@@ -113,6 +138,7 @@ impl App {
                             selected,
                             scroll: scroll && selected,
                             now,
+                            thumbnail,
                         }
                         .show(ui, palette);
                         if output.hovered && pointer_moved {
@@ -134,31 +160,18 @@ impl App {
     }
 
     fn empty_state(&self, ui: &mut egui::Ui, palette: &Palette) {
-        ui.centered_and_justified(|ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() / 2.0 - 48.0);
-                ui.label(
-                    RichText::new("\u{1F4CB}")
-                        .size(34.0)
-                        .color(palette.tertiary),
-                );
-                ui.add_space(10.0);
-                let (title, subtitle) = if self.query.trim().is_empty() {
-                    (
-                        "No Clipboard History",
-                        "Copied text, images and files appear here.".to_owned(),
-                    )
-                } else {
-                    (
-                        "No Results",
-                        format!("Nothing matches \u{201C}{}\u{201D}.", self.query.trim()),
-                    )
-                };
-                ui.label(RichText::new(title).size(15.0).color(palette.text));
-                ui.add_space(4.0);
-                ui.label(RichText::new(subtitle).size(12.5).color(palette.secondary));
-            });
-        });
+        if self.query.trim().is_empty() {
+            empty(
+                ui,
+                palette,
+                "\u{1F4CB}",
+                "No Clipboard History",
+                "Copied text, images and files appear here.",
+            );
+        } else {
+            let subtitle = format!("Nothing matches \u{201C}{}\u{201D}.", self.query.trim());
+            empty(ui, palette, "\u{1F4CB}", "No Results", &subtitle);
+        }
     }
 
     fn footer(&mut self, ui: &mut egui::Ui, palette: &Palette) -> Option<Command> {
@@ -177,9 +190,14 @@ impl App {
                         )
                         .truncate(),
                     );
-                } else {
-                    let count = self.entries.len();
-                    let noun = if count == 1 { "item" } else { "items" };
+                } else if self.sheet.is_none() {
+                    let count = self.len();
+                    let noun = match (self.secrets_mode(), count == 1) {
+                        (true, true) => "secret",
+                        (true, false) => "secrets",
+                        (false, true) => "item",
+                        (false, false) => "items",
+                    };
                     ui.label(
                         RichText::new(format!("{count} {noun}"))
                             .size(11.5)
@@ -188,27 +206,40 @@ impl App {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(8.0);
-                    ui.menu_button(
-                        RichText::new("\u{22EF}")
-                            .size(15.0)
-                            .color(palette.secondary),
-                        |ui| {
-                            if ui
-                                .add(egui::Button::new("Quit Pin").shortcut_text(format!("{CMD}Q")))
-                                .clicked()
-                            {
-                                command = Some(Command::Quit);
-                                ui.close();
-                            }
-                        },
-                    );
+                    if !self.recovery_key_open() {
+                        ui.menu_button(
+                            RichText::new("\u{22EF}")
+                                .size(15.0)
+                                .color(palette.secondary),
+                            |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new("Quit Pin")
+                                            .shortcut_text(format!("{CMD}Q")),
+                                    )
+                                    .clicked()
+                                {
+                                    command = Some(Command::Quit);
+                                    ui.close();
+                                }
+                            },
+                        );
+                    }
                     ui.add_space(6.0);
-                    for (keys, action) in [
-                        (format!("{CMD}{BACKSPACE}"), "Delete"),
-                        (format!("{CMD}P"), "Pin"),
-                        ("\u{21A9}".to_owned(), "Copy"),
-                    ] {
-                        hint(ui, palette, &keys, action);
+                    let hints: &[(String, &str)] = if self.sheet.is_some() {
+                        &[]
+                    } else if self.secrets_mode() {
+                        &[("\u{21A9}".to_owned(), "Copy \u{00B7} clears in 90 s")]
+                    } else {
+                        &[
+                            (format!("{CMD}{BACKSPACE}"), "Delete"),
+                            (format!("{CMD}S"), "Secret"),
+                            (format!("{CMD}P"), "Pin"),
+                            ("\u{21A9}".to_owned(), "Copy"),
+                        ]
+                    };
+                    for (keys, action) in hints {
+                        hint(ui, palette, keys, action);
                     }
                 });
             },
@@ -224,6 +255,19 @@ fn divider(ui: &mut egui::Ui, palette: &Palette) {
         rect.center().y,
         egui::Stroke::new(1.0, palette.separator),
     );
+}
+
+fn empty(ui: &mut egui::Ui, palette: &Palette, glyph: &str, title: &str, subtitle: &str) {
+    ui.centered_and_justified(|ui| {
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() / 2.0 - 48.0);
+            ui.label(RichText::new(glyph).size(34.0).color(palette.tertiary));
+            ui.add_space(10.0);
+            ui.label(RichText::new(title).size(15.0).color(palette.text));
+            ui.add_space(4.0);
+            ui.label(RichText::new(subtitle).size(12.5).color(palette.secondary));
+        });
+    });
 }
 
 fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {

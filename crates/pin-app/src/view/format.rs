@@ -34,7 +34,7 @@ pub fn details(entry: &Entry, now: Timestamp) -> String {
     }
 }
 
-fn relative(now: Timestamp, then: Timestamp) -> String {
+pub fn relative(now: Timestamp, then: Timestamp) -> String {
     let seconds = now.as_millis().saturating_sub(then.as_millis()) / 1000;
     match seconds {
         ..60 => "Just now".to_owned(),

@@ -1,13 +1,19 @@
+mod thumbs;
+mod vault;
+
 use std::sync::mpsc::{self, Receiver};
 
 use anyhow::Context as _;
 use eframe::egui;
 use pin_clipboard::{Clipboard, DEFAULT_INTERVAL, Privacy, WatchHandle};
-use pin_core::{Entry, EntryId, Keychain, Options, PinSlot, Store};
+use pin_core::{Entry, EntryId, Keychain, Options, PinSlot, Secret, SecretId, Store, VaultStatus};
 
 use crate::events::{Event, Events};
 use crate::hotkeys::{Action, Hotkeys};
 use crate::platform;
+
+use self::vault::PendingClear;
+pub use self::vault::{LabelTarget, PREFIX, Sheet, SheetAction};
 
 const LIST_LIMIT: usize = 200;
 
@@ -23,8 +29,20 @@ pub enum Command {
     SetPinned(EntryId, bool),
     SetSlot(EntryId, Option<PinSlot>),
     Delete(EntryId),
+    MoveToVault(EntryId),
+    CopySecret(SecretId),
+    EditSecret(SecretId),
+    DeleteSecret(SecretId),
+    Sheet(SheetAction),
     Hide,
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    None,
+    Search,
+    Sheet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,9 +64,17 @@ pub struct App {
     pub(crate) query: String,
     pub(crate) entries: Vec<Entry>,
     pub(crate) selected: usize,
-    pub(crate) focus_search: bool,
+    pub(crate) focus: Focus,
     pub(crate) error: Option<String>,
     pub(crate) scroll_to_selected: bool,
+    pub(crate) secrets: Vec<Secret>,
+    pub(crate) vault_status: VaultStatus,
+    pub(crate) sheet: Option<Sheet>,
+    pub(crate) sheet_error: Option<String>,
+    pending_clear: Option<PendingClear>,
+    quiet_until: Option<std::time::Instant>,
+    pub(crate) forget_text_state: bool,
+    thumbs: thumbs::Thumbnails,
     window: Window,
     reopen: Reopen,
     quitting: bool,
@@ -71,6 +97,7 @@ impl App {
         let watch = watch
             .inspect_err(|err| tracing::warn!(%err, "clipboard history disabled"))
             .ok();
+        let thumbs = thumbs::Thumbnails::spawn(events.clone());
         let hotkeys = Hotkeys::register(events)
             .inspect_err(|err| tracing::warn!(%err, "global hotkeys disabled"))
             .ok();
@@ -90,9 +117,17 @@ impl App {
             query: String::new(),
             entries: Vec::new(),
             selected: 0,
-            focus_search: true,
+            focus: Focus::Search,
             error: None,
             scroll_to_selected: true,
+            secrets: Vec::new(),
+            vault_status: VaultStatus::Locked,
+            sheet: None,
+            sheet_error: None,
+            pending_clear: None,
+            quiet_until: None,
+            forget_text_state: false,
+            thumbs,
             reopen,
             window: Window::Shown { had_focus: false },
             quitting: false,
@@ -103,7 +138,37 @@ impl App {
         app
     }
 
+    /// Returns whether `target` should grab keyboard focus this frame.
+    pub(crate) fn take_focus(&mut self, target: Focus) -> bool {
+        if self.focus == target {
+            self.focus = Focus::None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn secrets_mode(&self) -> bool {
+        self.query.starts_with(PREFIX)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        if self.secrets_mode() {
+            self.secrets.len()
+        } else {
+            self.entries.len()
+        }
+    }
+
     pub(crate) fn refresh(&mut self) {
+        if self.secrets_mode() {
+            if let Err(err) = self.refresh_secrets() {
+                self.report(&err);
+            }
+            self.selected = self.selected.min(self.len().saturating_sub(1));
+            return;
+        }
+        self.leave_secrets();
         let query = self.query.trim();
         let entries = if query.is_empty() {
             self.store.recent(LIST_LIMIT, 0)
@@ -114,6 +179,7 @@ impl App {
             Ok(entries) => self.entries = entries,
             Err(err) => self.report(&err),
         }
+        self.prune_thumbnails();
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
     }
 
@@ -123,11 +189,27 @@ impl App {
             Command::SetPinned(id, pinned) => self.store.set_pinned(id, pinned).map_err(Into::into),
             Command::SetSlot(id, slot) => self.store.set_slot(id, slot).map_err(Into::into),
             Command::Delete(id) => self.store.delete(id).map_err(Into::into),
+            Command::MoveToVault(id) => self.start_move(id),
+            Command::CopySecret(id) => self.copy_secret(id).map(|()| self.hide(ctx)),
+            Command::EditSecret(id) => {
+                self.start_edit(id);
+                Ok(())
+            }
+            Command::DeleteSecret(id) => {
+                self.start_delete(id);
+                Ok(())
+            }
+            Command::Sheet(action) => {
+                self.sheet_action(action);
+                Ok(())
+            }
             Command::Hide => {
                 self.hide(ctx);
                 Ok(())
             }
+            Command::Quit if self.recovery_key_open() => Ok(()),
             Command::Quit => {
+                self.clear_pending_secret();
                 self.quitting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 Ok(())
@@ -161,8 +243,12 @@ impl App {
                 if let Err(err) = self.store.insert(entry) {
                     self.report(&err);
                 }
-                self.refresh_if_shown();
+                // Listing secrets counts as vault use; background copies must not hold it unlocked.
+                if !self.secrets_mode() {
+                    self.refresh_if_shown();
+                }
             }
+            Event::Thumbnail(id, thumb) => self.thumbnail_ready(ctx, id, thumb),
             Event::Hotkey(Action::Toggle) => match self.window {
                 Window::Hidden => self.show(ctx),
                 Window::Shown { had_focus: false } => {
@@ -180,27 +266,40 @@ impl App {
                 if let Err(err) = copied {
                     self.report(&*err);
                 }
-                self.refresh_if_shown();
+                if !self.secrets_mode() {
+                    self.refresh_if_shown();
+                }
             }
         }
     }
 
     fn copy(&mut self, id: EntryId) -> Result<(), Box<dyn std::error::Error>> {
-        let Some(clipboard) = &self.clipboard else {
-            return Err(Box::new(pin_clipboard::Error::Unsupported));
-        };
         let formats = self.store.formats(id)?;
-        let written = clipboard.write(&formats, Privacy::Normal)?;
-        if let Some(watch) = &self.watch {
-            watch.ignore(written);
-        }
+        let written = self.write_clipboard(&formats, Privacy::Normal)?;
+        tracing::debug!(%id, kinds = ?formats.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>(), ?written, "copied entry to clipboard");
         self.store.touch(id)?;
         Ok(())
     }
 
+    fn write_clipboard(
+        &self,
+        formats: &[pin_core::Format],
+        privacy: Privacy,
+    ) -> Result<pin_clipboard::ChangeCount, pin_clipboard::Error> {
+        let clipboard = self
+            .clipboard
+            .as_ref()
+            .ok_or(pin_clipboard::Error::Unsupported)?;
+        let written = clipboard.write(formats, privacy)?;
+        if let Some(watch) = &self.watch {
+            watch.ignore(written);
+        }
+        Ok(written)
+    }
+
     fn show(&mut self, ctx: &egui::Context) {
         self.window = Window::Shown { had_focus: false };
-        self.focus_search = true;
+        self.focus = Focus::Search;
         self.query.clear();
         self.error = None;
         self.selected = 0;
@@ -219,6 +318,7 @@ impl App {
             return;
         }
         self.window = Window::Hidden;
+        self.drop_thumbnails();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
@@ -245,10 +345,15 @@ impl eframe::App for App {
         while let Ok(event) = self.events.try_recv() {
             self.handle(ctx, event);
         }
+        self.tick(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show_ui(ui);
+    }
+
+    fn on_exit(&mut self) {
+        self.clear_pending_secret();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
