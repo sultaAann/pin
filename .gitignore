@@ -16,6 +16,9 @@
 .claude/settings.json
 .claude/settings.local.json
 .claude/.cc-writes/
+.claude/skills/
+.agents/
+skills-lock.json
 
 .idea/
 .vscode/
