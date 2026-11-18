@@ -15,6 +15,10 @@ const FIELD_CAPACITY: usize = 256;
 // Instant pauses while the Mac sleeps, so wake-ups are capped and wall-clock deadlines rechecked.
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const QUIET_AFTER_KDF: Duration = Duration::from_millis(400);
+// Option also types characters such as @ or [ on many layouts, so a quick press must not reveal.
+const ALT_REVEAL_AFTER: Duration = Duration::from_millis(250);
+// A value shown with a click hides itself, so it isn't left on screen.
+const SHOWN_FOR: Duration = Duration::from_secs(30);
 
 type Field = Zeroizing<String>;
 type ActionResult = Result<(), Box<dyn std::error::Error>>;
@@ -38,6 +42,8 @@ pub enum Sheet {
     RecoveryKey {
         key: Field,
         then: Option<EntryId>,
+        /// The user ticked that the key is stored; the sheet can't be left before that.
+        saved: bool,
     },
     Label {
         target: LabelTarget,
@@ -92,7 +98,23 @@ pub enum SheetAction {
     Submit,
     Cancel,
     Forgot,
+    Back,
     CopyRecoveryKey,
+}
+
+/// A secret's value shown while the user holds the reveal control; `text` is `None` for images.
+pub struct Revealed {
+    pub id: SecretId,
+    pub text: Option<Field>,
+}
+
+/// How the Alt key is being held, for revealing with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AltHold {
+    Up,
+    Since(Instant),
+    /// Another key was pressed during this hold, so it is typing, not a reveal.
+    Typing,
 }
 
 pub(super) struct PendingClear {
@@ -119,7 +141,8 @@ enum Input {
 
 impl App {
     pub(super) fn refresh_secrets(&mut self) -> pin_core::Result<()> {
-        let filter: Vec<char> = self.query[PREFIX.len_utf8()..]
+        let filter: Vec<char> = self
+            .secret_query()
             .trim()
             .chars()
             .flat_map(char::to_lowercase)
@@ -127,6 +150,7 @@ impl App {
         let mut vault = self.store.vault();
         self.vault_status = vault.status()?;
         if self.vault_status != VaultStatus::Unlocked {
+            self.hide_value();
             self.secrets.clear();
             if self.sheet.as_ref().is_none_or(Sheet::shows_secret_data) {
                 self.open_sheet(entry_sheet(self.vault_status, None));
@@ -144,8 +168,10 @@ impl App {
 
     // Unlock and setup prompts that only exist because "/" was typed go away with it.
     pub(super) fn leave_secrets(&mut self) {
+        self.hide_value();
         self.secrets.clear();
-        if self.sheet.as_ref().is_some_and(Sheet::opened_by_prefix) {
+        let stale = |s: &Sheet| s.opened_by_prefix() || s.shows_secret_data();
+        if self.sheet.as_ref().is_some_and(stale) {
             self.set_sheet(None);
         }
     }
@@ -201,11 +227,27 @@ impl App {
                 });
                 Ok(())
             }
+            SheetAction::Back => {
+                let then = match &self.sheet {
+                    Some(Sheet::Recover { then, .. }) => *then,
+                    _ => None,
+                };
+                self.open_sheet(Sheet::Unlock {
+                    password: field(),
+                    then,
+                });
+                Ok(())
+            }
             SheetAction::CopyRecoveryKey => self.copy_recovery_key(),
         };
         if let Err(err) = result {
             tracing::debug!(%err, "vault action failed");
-            self.sheet_error = Some(capitalize(&err.to_string()));
+            self.sheet_error = Some(match err.downcast_ref::<pin_core::Error>() {
+                Some(pin_core::Error::WrongPassword) => {
+                    "Wrong password. Try again or use your recovery key.".to_owned()
+                }
+                _ => capitalize(&err.to_string()),
+            });
         }
     }
 
@@ -221,12 +263,113 @@ impl App {
         if self.store.vault().lock_if_idle() {
             self.on_locked();
         }
-        if let Some(deadline) = self.store.vault().lock_deadline() {
+        self.lock_at = self.store.vault().lock_deadline();
+        if let Some(deadline) = self.lock_at {
             ctx.request_repaint_after(deadline.saturating_duration_since(now).min(MAX_WAIT));
         }
     }
 
+    pub(super) fn lock_now(&mut self) {
+        self.store.vault().lock();
+        self.lock_at = None;
+        self.on_locked();
+    }
+
+    /// Time left before the vault locks itself if it stays unused.
+    pub(crate) fn locks_in(&self) -> Option<Duration> {
+        self.lock_at
+            .map(|at| at.saturating_duration_since(Instant::now()))
+    }
+
+    /// Time left before a copied secret is cleared from the clipboard, and that as a share of
+    /// the whole wait.
+    pub(crate) fn clears_in(&self) -> Option<(Duration, f32)> {
+        let pending = self.pending_clear.as_ref()?;
+        let left = pending.at.checked_duration_since(Instant::now())?;
+        Some((left, left.as_secs_f32() / CLEAR_AFTER.as_secs_f32()))
+    }
+
+    /// The search text typed after the secrets prefix.
+    pub(crate) fn secret_query(&self) -> &str {
+        self.query.strip_prefix(PREFIX).unwrap_or_default()
+    }
+
+    /// Whether Alt, with `others` telling if any other key or modifier is down, has been held
+    /// alone long enough to reveal; otherwise how long until it would be.
+    pub(crate) fn alt_reveals(&mut self, alt: bool, others: bool) -> (bool, Option<Duration>) {
+        let now = Instant::now();
+        self.alt_hold = match (alt, others, self.alt_hold) {
+            (false, _, _) => AltHold::Up,
+            (true, true, _) | (true, _, AltHold::Typing) => AltHold::Typing,
+            (true, false, AltHold::Up) => AltHold::Since(now),
+            (true, false, since) => since,
+        };
+        match self.alt_hold {
+            AltHold::Since(since) => {
+                let held = now.saturating_duration_since(since);
+                (
+                    held >= ALT_REVEAL_AFTER,
+                    ALT_REVEAL_AFTER.checked_sub(held).filter(|d| !d.is_zero()),
+                )
+            }
+            _ => (false, None),
+        }
+    }
+
+    /// Shows the selected secret's value for a while, or hides it if it is shown.
+    pub(crate) fn toggle_reveal(&mut self) {
+        let selected = self.secrets.get(self.selected).map(|s| s.id);
+        self.shown_until = match (self.revealed.as_ref().map(|r| r.id), selected) {
+            (Some(shown), Some(id)) if shown == id => None,
+            (_, Some(id)) => Some((id, Instant::now() + SHOWN_FOR)),
+            (_, None) => None,
+        };
+    }
+
+    /// Time left before a value shown with a click hides itself.
+    pub(crate) fn shown_for(&self) -> Option<Duration> {
+        self.shown_until
+            .and_then(|(_, until)| until.checked_duration_since(Instant::now()))
+    }
+
+    /// Drops the shown value and any pending reveal.
+    pub(crate) fn hide_value(&mut self) {
+        self.shown_until = None;
+        self.revealed = None;
+    }
+
+    /// Decrypts the selected secret's value while Alt is `held` or after a click on Show, and
+    /// drops it as soon as neither applies.
+    pub(crate) fn hold_reveal(&mut self, held: bool) {
+        let selected = self.secrets.get(self.selected).map(|s| s.id);
+        let clicked = self
+            .shown_until
+            .is_some_and(|(id, until)| Some(id) == selected && Instant::now() < until);
+        if !clicked {
+            self.shown_until = None;
+        }
+        let id = match selected {
+            Some(id) if (held || clicked) && self.is_shown() => id,
+            _ => {
+                self.revealed = None;
+                return;
+            }
+        };
+        if self.revealed.as_ref().is_some_and(|r| r.id == id) {
+            return;
+        }
+        match self.store.vault().reveal(id) {
+            Ok(text) => self.revealed = Some(Revealed { id, text }),
+            Err(err) => {
+                // Remembered as revealed-without-text so repaints don't retry until release.
+                self.revealed = Some(Revealed { id, text: None });
+                self.report(&err);
+            }
+        }
+    }
+
     fn on_locked(&mut self) {
+        self.hide_value();
         self.secrets.clear();
         if self.sheet.as_ref().is_some_and(Sheet::shows_secret_data) {
             self.set_sheet(None);
@@ -267,8 +410,13 @@ impl App {
     }
 
     fn cancel_sheet(&mut self) {
-        if matches!(self.sheet, Some(Sheet::RecoveryKey { .. })) {
-            return;
+        match self.sheet {
+            Some(Sheet::RecoveryKey { saved: true, .. }) => {
+                self.sheet_action(SheetAction::Submit);
+                return;
+            }
+            Some(Sheet::RecoveryKey { .. }) => return,
+            _ => {}
         }
         self.set_sheet(None);
         self.sheet_error = None;
@@ -310,7 +458,14 @@ impl App {
                 confirm,
                 then,
             } => match self.quietly(|app| app.create(&password, &confirm)) {
-                Ok(key) => (Some(Sheet::RecoveryKey { key, then }), Ok(())),
+                Ok(key) => (
+                    Some(Sheet::RecoveryKey {
+                        key,
+                        then,
+                        saved: false,
+                    }),
+                    Ok(()),
+                ),
                 Err(err) => (
                     Some(Sheet::Create {
                         password,
@@ -337,7 +492,14 @@ impl App {
                 confirm,
                 then,
             } => match self.quietly(|app| app.recover(&key, &password, &confirm)) {
-                Ok(fresh) => (Some(Sheet::RecoveryKey { key: fresh, then }), Ok(())),
+                Ok(fresh) => (
+                    Some(Sheet::RecoveryKey {
+                        key: fresh,
+                        then,
+                        saved: false,
+                    }),
+                    Ok(()),
+                ),
                 Err(err) => (
                     Some(Sheet::Recover {
                         key,
@@ -352,7 +514,10 @@ impl App {
                 Ok(()) => (None, Ok(())),
                 Err(err) => (Some(Sheet::ConfirmDelete { id }), Err(err.into())),
             },
-            Sheet::RecoveryKey { then, .. } => (then.map(Self::move_sheet), Ok(())),
+            Sheet::RecoveryKey {
+                then, saved: true, ..
+            } => (then.map(Self::move_sheet), Ok(())),
+            sheet @ Sheet::RecoveryKey { saved: false, .. } => (Some(sheet), Ok(())),
             Sheet::Label { target, name, note } => {
                 let label = SecretLabel {
                     name: name.trim().to_owned(),

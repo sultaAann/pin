@@ -3146,6 +3146,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pin-clipboard",
  "pin-core",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",

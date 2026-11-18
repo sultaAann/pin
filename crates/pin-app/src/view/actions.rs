@@ -21,7 +21,11 @@ impl App {
         window: Rect,
         palette: &Palette,
     ) -> Option<Command> {
-        let entry = self.actions_entry()?.clone();
+        let (title, pin) = match (self.actions_entry(), self.actions_secret()) {
+            (Some(entry), _) => (format::title(entry).to_owned(), entry.pin),
+            (None, Some(secret)) => (secret.name.clone(), Pin::None),
+            (None, None) => return None,
+        };
         let items = self.action_items();
         let actions = self.actions.as_ref()?;
         let (page, opened) = (actions.page, actions.opened);
@@ -44,7 +48,7 @@ impl App {
                     ui.set_width(width);
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                     let heading = match page {
-                        Page::Main => format::title(&entry),
+                        Page::Main => title.as_str(),
                         Page::Slots => "Assign Shortcut",
                     };
                     caption(ui, palette, width, heading);
@@ -81,7 +85,7 @@ impl App {
                         if response.hovered() && pointer_moved {
                             hovered = Some(index);
                         }
-                        paint_item(ui, rect, item, entry.pin, index == highlighted, palette);
+                        paint_item(ui, rect, item, pin, index == highlighted, palette);
                         if response.clicked() {
                             chosen = Some(item.action);
                         }
@@ -199,6 +203,7 @@ fn icon(action: EntryAction) -> Icon {
         EntryAction::AssignShortcut | EntryAction::Slot(_) => Icon::Keyboard,
         EntryAction::RemoveShortcut => Icon::Clear,
         EntryAction::MoveToSecrets => Icon::Lock,
+        EntryAction::Edit => Icon::Doc,
         EntryAction::Delete => Icon::Trash,
     }
 }
@@ -213,6 +218,7 @@ pub(super) fn shortcut(item: &Item, pin: Pin) -> String {
         },
         EntryAction::Slot(_) if item.current => "Current".to_owned(),
         EntryAction::MoveToSecrets => format!("{CMD}S"),
+        EntryAction::Edit => format!("{CMD}E"),
         EntryAction::Delete => format!("{CMD}{BACKSPACE}"),
         EntryAction::Slot(_) | EntryAction::RemoveShortcut => String::new(),
     }

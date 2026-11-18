@@ -32,6 +32,10 @@ pub enum Icon {
     Trash,
     Chevron,
     Clipboard,
+    Shield,
+    Eye,
+    Alert,
+    Check,
 }
 
 impl Icon {
@@ -271,6 +275,40 @@ fn paint_controls(pen: &Pen<'_>, icon: Icon) {
             pen.line(&[(14.0, 11.0), (14.0, 17.0)]);
         }
         Icon::Chevron => pen.line(&[(9.0, 6.0), (15.0, 12.0), (9.0, 18.0)]),
+        _ => paint_status(pen, icon),
+    }
+}
+
+fn paint_status(pen: &Pen<'_>, icon: Icon) {
+    match icon {
+        Icon::Shield => {
+            pen.closed(&[
+                (12.0, 3.0),
+                (19.0, 6.0),
+                (19.0, 12.0),
+                (18.0, 15.5),
+                (15.5, 18.8),
+                (12.0, 21.0),
+                (8.5, 18.8),
+                (6.0, 15.5),
+                (5.0, 12.0),
+                (5.0, 6.0),
+            ]);
+            pen.line(&[(9.0, 12.0), (11.0, 14.0), (15.0, 10.0)]);
+        }
+        Icon::Eye => {
+            const TILT: f32 = 0.349;
+            let mut outline = arc(12.0, 15.64, 10.64, PI + TILT, 2.0 * PI - TILT);
+            outline.extend(arc(12.0, 8.36, 10.64, TILT, PI - TILT));
+            pen.closed(&outline);
+            pen.circle(12.0, 12.0, 3.0);
+        }
+        Icon::Alert => {
+            pen.circle(12.0, 12.0, 9.0);
+            pen.line(&[(12.0, 7.5), (12.0, 13.0)]);
+            pen.dot(12.0, 16.5);
+        }
+        Icon::Check => pen.line(&[(5.0, 12.5), (10.0, 17.0), (19.0, 7.0)]),
         _ => {}
     }
 }

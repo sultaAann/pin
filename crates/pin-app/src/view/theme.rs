@@ -9,12 +9,16 @@ pub const CMD: &str = "\u{2318}";
 pub const CMD_KEY: &str = "\u{2318}";
 #[cfg(target_os = "macos")]
 pub const BACKSPACE: &str = "\u{232B}";
+#[cfg(target_os = "macos")]
+pub const ALT: &str = "\u{2325}";
 #[cfg(not(target_os = "macos"))]
 pub const CMD: &str = "Ctrl+";
 #[cfg(not(target_os = "macos"))]
 pub const CMD_KEY: &str = "Ctrl";
 #[cfg(not(target_os = "macos"))]
 pub const BACKSPACE: &str = "Backspace";
+#[cfg(not(target_os = "macos"))]
+pub const ALT: &str = "Alt";
 
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
@@ -36,6 +40,12 @@ pub struct Palette {
     pub well: Color32,
     pub menu: Color32,
     pub danger: Color32,
+    pub danger_solid: Color32,
+    pub danger_tile: Color32,
+    pub success: Color32,
+    pub success_text: Color32,
+    pub field: Color32,
+    pub focus_ring: Color32,
     pub dark: bool,
 }
 
@@ -84,7 +94,7 @@ impl Palette {
         // Grey text shades keep 4.5:1 contrast against the background, even at 11 px.
         if ctx.global_style().visuals.dark_mode {
             Self {
-                background: Color32::from_rgba_unmultiplied(36, 36, 39, 250),
+                background: Color32::from_rgb(36, 36, 39),
                 border: Color32::from_white_alpha(30),
                 separator: Color32::from_white_alpha(20),
                 text: Color32::from_rgb(236, 236, 240),
@@ -102,11 +112,17 @@ impl Palette {
                 well: Color32::from_white_alpha(10),
                 menu: Color32::from_rgb(46, 46, 49),
                 danger: Color32::from_rgb(255, 107, 107),
+                danger_solid: Color32::from_rgb(215, 55, 63),
+                danger_tile: Color32::from_rgba_unmultiplied(255, 107, 107, 41),
+                success: Color32::from_rgb(48, 209, 88),
+                success_text: Color32::from_rgb(91, 212, 122),
+                field: Color32::from_white_alpha(13),
+                focus_ring: Color32::from_rgba_unmultiplied(10, 132, 255, 77),
                 dark: true,
             }
         } else {
             Self {
-                background: Color32::from_rgba_unmultiplied(246, 246, 248, 250),
+                background: Color32::from_rgb(246, 246, 248),
                 border: Color32::from_black_alpha(36),
                 separator: Color32::from_black_alpha(20),
                 text: Color32::from_rgb(28, 28, 30),
@@ -124,6 +140,12 @@ impl Palette {
                 well: Color32::from_black_alpha(9),
                 menu: Color32::WHITE,
                 danger: Color32::from_rgb(196, 0, 26),
+                danger_solid: Color32::from_rgb(196, 0, 26),
+                danger_tile: Color32::from_rgba_unmultiplied(196, 0, 26, 26),
+                success: Color32::from_rgb(40, 167, 69),
+                success_text: Color32::from_rgb(30, 123, 52),
+                field: Color32::WHITE,
+                focus_ring: Color32::from_rgba_unmultiplied(0, 100, 210, 46),
                 dark: false,
             }
         }

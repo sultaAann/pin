@@ -3,6 +3,9 @@ mod preview;
 mod thumbs;
 mod vault;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::mpsc::{self, Receiver};
 
 use anyhow::Context as _;
@@ -12,14 +15,14 @@ use pin_core::{
     Entry, EntryId, Filter, Keychain, Options, PinSlot, Secret, SecretId, Store, VaultStatus,
 };
 
-pub use self::actions::{Actions, EntryAction, Item, Page, entry_items};
+pub use self::actions::{Actions, EntryAction, Item, Page, Target, entry_items, secret_items};
 
 use crate::events::{Event, Events};
 use crate::hotkeys::{Action, Hotkeys};
 use crate::platform;
 
-use self::vault::PendingClear;
-pub use self::vault::{LabelTarget, PREFIX, Sheet, SheetAction};
+use self::vault::{AltHold, PendingClear};
+pub use self::vault::{LabelTarget, PREFIX, Revealed, Sheet, SheetAction};
 
 const LIST_LIMIT: usize = 200;
 
@@ -39,6 +42,7 @@ pub enum Command {
     CopySecret(SecretId),
     EditSecret(SecretId),
     DeleteSecret(SecretId),
+    LockSecrets,
     Sheet(SheetAction),
     Hide,
     Quit,
@@ -80,6 +84,10 @@ pub struct App {
     pub(crate) vault_status: VaultStatus,
     pub(crate) sheet: Option<Sheet>,
     pub(crate) sheet_error: Option<String>,
+    pub(crate) revealed: Option<Revealed>,
+    alt_hold: AltHold,
+    shown_until: Option<(SecretId, std::time::Instant)>,
+    lock_at: Option<std::time::Instant>,
     pending_clear: Option<PendingClear>,
     quiet_until: Option<std::time::Instant>,
     pub(crate) forget_text_state: bool,
@@ -136,6 +144,10 @@ impl App {
             vault_status: VaultStatus::Locked,
             sheet: None,
             sheet_error: None,
+            revealed: None,
+            alt_hold: AltHold::Up,
+            shown_until: None,
+            lock_at: None,
             pending_clear: None,
             quiet_until: None,
             forget_text_state: false,
@@ -164,6 +176,10 @@ impl App {
         self.query.starts_with(PREFIX)
     }
 
+    pub(crate) fn is_shown(&self) -> bool {
+        self.window != Window::Hidden
+    }
+
     pub(crate) fn len(&self) -> usize {
         if self.secrets_mode() {
             self.secrets.len()
@@ -177,6 +193,7 @@ impl App {
             if let Err(err) = self.refresh_secrets() {
                 self.report(&err);
             }
+            self.prune_actions();
             self.selected = self.selected.min(self.len().saturating_sub(1));
             return;
         }
@@ -214,6 +231,10 @@ impl App {
             }
             Command::DeleteSecret(id) => {
                 self.start_delete(id);
+                Ok(())
+            }
+            Command::LockSecrets => {
+                self.lock_now();
                 Ok(())
             }
             Command::Sheet(action) => {
@@ -333,6 +354,7 @@ impl App {
     fn hide(&mut self, ctx: &egui::Context) {
         platform::yield_focus();
         self.actions = None;
+        self.hide_value();
         self.drop_preview();
         if self.reopen == Reopen::Dock {
             self.window = Window::Shown { had_focus: false };

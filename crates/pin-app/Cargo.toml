@@ -26,5 +26,8 @@ objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", 
 objc2-foundation = { workspace = true, features = ["NSGeometry"] }
 winit.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

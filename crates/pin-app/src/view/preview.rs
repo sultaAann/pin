@@ -12,7 +12,7 @@ use super::theme::Palette;
 use crate::app::App;
 use crate::hotkeys::slot_label;
 
-const META_HEIGHT: f32 = 100.0;
+pub(super) const META_HEIGHT: f32 = 100.0;
 const IMAGE_HEIGHT: f32 = 186.0;
 const MAX_FILES: usize = 100;
 
@@ -25,11 +25,12 @@ impl App {
             .then(|| self.thumbnail(entry.id))
             .flatten();
         let query = self.query.trim().to_owned();
-        let shown = self.selected_preview();
+        let shown = self.selected_preview(&query);
         Pane {
             entry: &entry,
             details: shown.map(|s| &s.details),
             missing: shown.map_or(&[][..], |s| s.missing.as_slice()),
+            hits: shown.map_or(&[][..], |s| s.hits()),
             thumbnail,
             query: &query,
             now: Timestamp::now(),
@@ -42,6 +43,7 @@ struct Pane<'a> {
     entry: &'a Entry,
     details: Option<&'a Details>,
     missing: &'a [bool],
+    hits: &'a [std::ops::Range<usize>],
     thumbnail: Option<TextureHandle>,
     query: &'a str,
     now: Timestamp,
@@ -118,24 +120,13 @@ impl Pane<'_> {
         }
     }
 
-    fn well(ui: &mut egui::Ui, palette: &Palette, add: impl FnOnce(&mut egui::Ui)) {
-        Frame::new()
-            .fill(palette.well)
-            .corner_radius(8)
-            .inner_margin(Margin::symmetric(14, 12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                add(ui);
-            });
-    }
-
     fn text(&self, ui: &mut egui::Ui, palette: &Palette) {
         let shown = self.details.and_then(|d| d.text.as_deref());
-        Self::well(ui, palette, |ui| match shown {
+        well(ui, palette, |ui| match shown {
             Some(content) => {
-                let mut job = text::highlighted(
+                let mut job = text::marked(
                     content,
-                    self.query,
+                    self.hits,
                     FontId::proportional(13.0),
                     palette.text,
                     palette.hit,
@@ -162,7 +153,7 @@ impl Pane<'_> {
             .split_whitespace()
             .next()
             .unwrap_or_default();
-        Self::well(ui, palette, |ui| {
+        well(ui, palette, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing = vec2(12.0, 4.0);
                 tile(ui, palette, Icon::Link, 36.0);
@@ -273,32 +264,49 @@ impl Pane<'_> {
             ("Size", format::size(self.entry.size)),
             ("Formats", formats),
         ];
-        let width = ((ui.available_width() - 16.0) / 2.0).max(0.0);
-        for (index, pair) in cells.chunks(2).enumerate() {
-            if index > 0 {
-                ui.add_space(10.0);
-            }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
-                for (label, value) in pair {
-                    ui.allocate_ui(vec2(width, 32.0), |ui| {
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.label(RichText::new(*label).size(11.0).color(palette.tertiary));
-                            ui.add(
-                                Label::new(
-                                    RichText::new(value.as_str())
-                                        .size(12.5)
-                                        .color(palette.secondary),
-                                )
-                                .truncate(),
-                            );
-                        });
-                    });
-                }
-            });
-        }
+        meta_grid(ui, palette, &cells);
     }
+}
+
+/// Label and value pairs in two columns, as at the bottom of a preview.
+pub(super) fn meta_grid(ui: &mut egui::Ui, palette: &Palette, cells: &[(&str, String)]) {
+    let width = ((ui.available_width() - 16.0) / 2.0).max(0.0);
+    for (index, pair) in cells.chunks(2).enumerate() {
+        if index > 0 {
+            ui.add_space(10.0);
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            for (label, value) in pair {
+                ui.allocate_ui(vec2(width, 32.0), |ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(RichText::new(*label).size(11.0).color(palette.tertiary));
+                        ui.add(
+                            Label::new(
+                                RichText::new(value.as_str())
+                                    .size(12.5)
+                                    .color(palette.secondary),
+                            )
+                            .truncate(),
+                        );
+                    });
+                });
+            }
+        });
+    }
+}
+
+/// The tinted box that holds a preview's content.
+pub(super) fn well(ui: &mut egui::Ui, palette: &Palette, add: impl FnOnce(&mut egui::Ui)) {
+    Frame::new()
+        .fill(palette.well)
+        .corner_radius(8)
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
 }
 
 fn tile(ui: &mut egui::Ui, palette: &Palette, icon: Icon, size: f32) {

@@ -7,9 +7,10 @@ mod icons;
 mod keys;
 mod preview;
 mod row;
+mod secrets;
+mod sheets;
 mod text;
 mod theme;
-mod vault;
 
 use eframe::egui::{
     self, Align, Color32, FontId, Layout, RichText, ScrollArea, Sense, Stroke, TextEdit, vec2,
@@ -49,7 +50,11 @@ impl App {
                 ui.set_min_size(ui.available_size());
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 self.search_bar(ui, &palette);
-                if self.sheet.is_none() && !self.secrets_mode() {
+                if self.secrets_mode() {
+                    if let Some(chosen) = self.vault_strip(ui, &palette) {
+                        clicked = Some(chosen);
+                    }
+                } else if self.sheet.is_none() {
                     self.filters(ui, &palette);
                 }
                 divider(ui, &palette);
@@ -88,24 +93,20 @@ impl App {
     }
 
     fn search_bar(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let secrets = self.secrets_mode();
         ui.allocate_ui_with_layout(
             vec2(ui.available_width(), SEARCH_HEIGHT),
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.add_space(18.0);
-                let glyph = if self.secrets_mode() {
-                    Icon::Lock
-                } else {
-                    Icon::Search
-                };
-                controls::icon(ui, glyph, 18.0, palette.secondary);
+                controls::icon(ui, Icon::Search, 18.0, palette.secondary);
                 ui.add_space(10.0);
+                let id = egui::Id::unique(SEARCH_ID);
+                let (mut text, mut edited) = self.search_prefix(ui, palette, id);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(12.0);
-                    let id = egui::Id::unique(SEARCH_ID);
                     let prefix = PREFIX.to_string();
-                    let mut edited = false;
-                    if !self.secrets_mode()
+                    if !secrets
                         && self.sheet.is_none()
                         && (controls::Pill {
                             icon: Some(Icon::Lock),
@@ -118,22 +119,34 @@ impl App {
                         .clicked()
                     {
                         self.query.clone_from(&prefix);
-                        cursor_to_end(ui.ctx(), id, &self.query);
                         edited = true;
                     }
-                    if !self.query.is_empty() {
+                    if !text.is_empty() {
                         ui.add_space(6.0);
                         if controls::icon_button(ui, palette, Icon::Clear, "Clear search").clicked()
                         {
-                            self.query.clear();
+                            text.clear();
+                            self.query = if secrets {
+                                prefix.clone()
+                            } else {
+                                String::new()
+                            };
                             edited = true;
                         }
                         ui.add_space(4.0);
+                    } else if secrets && self.sheet.is_none() && !edited {
+                        secrets::history_hint(ui, palette);
+                        ui.add_space(8.0);
                     }
+                    let hint = match (secrets, self.sheet.is_some()) {
+                        (_, true) => "",
+                        (true, false) => "Search secrets by name or note",
+                        (false, false) => "Search Clipboard",
+                    };
                     let search = ui.add(
-                        TextEdit::singleline(&mut self.query)
+                        TextEdit::singleline(&mut text)
                             .id(id)
-                            .hint_text(RichText::new("Search Clipboard").color(palette.tertiary))
+                            .hint_text(RichText::new(hint).color(palette.tertiary))
                             .font(FontId::proportional(19.0))
                             .text_color(palette.text)
                             .frame(egui::Frame::NONE)
@@ -142,11 +155,22 @@ impl App {
                     );
                     if edited {
                         self.focus = Focus::Search;
+                        cursor_to_end(ui.ctx(), id, self.search_text());
+                    } else if search.changed() {
+                        self.query = if secrets {
+                            format!("{PREFIX}{text}")
+                        } else {
+                            text
+                        };
+                        edited = true;
+                        if self.secrets_mode() != secrets {
+                            cursor_to_end(ui.ctx(), id, self.search_text());
+                        }
                     }
                     if self.take_focus(Focus::Search) {
                         search.request_focus();
                     }
-                    if search.changed() || edited {
+                    if edited {
                         self.selected = 0;
                         self.scroll_to_selected = true;
                         self.refresh();
@@ -156,11 +180,57 @@ impl App {
         );
     }
 
+    /// The text the search field edits; in secrets mode the prefix is a pill before it, and
+    /// Backspace in the empty field or the pill's close button go back to history.
+    fn search_prefix(
+        &mut self,
+        ui: &mut egui::Ui,
+        palette: &Palette,
+        id: egui::Id,
+    ) -> (String, bool) {
+        if !self.secrets_mode() {
+            return (self.query.clone(), false);
+        }
+        // A sheet about a secret must not outlive secrets mode, so leaving waits for it to close.
+        let open = self.sheet.is_none();
+        let mut back = secrets::mode_pill(ui, palette) && open;
+        ui.add_space(10.0);
+        let text = self.secret_query().to_owned();
+        back |= open
+            && text.is_empty()
+            && ui.memory(|m| m.has_focus(id))
+            && ui.input(|i| i.key_pressed(egui::Key::Backspace) && i.modifiers.is_none());
+        if back {
+            self.query.clear();
+        }
+        (text, back)
+    }
+
+    /// What the search field shows: the text after the prefix in secrets mode, else the query.
+    fn search_text(&self) -> &str {
+        if self.secrets_mode() {
+            self.secret_query()
+        } else {
+            &self.query
+        }
+    }
+
     fn history(&mut self, ui: &mut egui::Ui, palette: &Palette) -> Option<Command> {
         if self.entries.is_empty() {
             self.empty_history(ui, palette);
             return None;
         }
+        self.columns(ui, palette, Self::list, Self::preview_pane)
+    }
+
+    /// The history and secrets body: a list column, a divider and a preview column.
+    fn columns(
+        &mut self,
+        ui: &mut egui::Ui,
+        palette: &Palette,
+        list: fn(&mut Self, &mut egui::Ui, &Palette) -> Option<Command>,
+        preview: fn(&mut Self, &mut egui::Ui, &Palette),
+    ) -> Option<Command> {
         let height = ui.available_height();
         // Each column needs its own top-down layout: allocate_ui keeps the parent's horizontal one.
         let column = Layout::top_down(Align::Min);
@@ -169,7 +239,7 @@ impl App {
             let command = ui
                 .allocate_ui_with_layout(vec2(LIST_WIDTH, height), column, |ui| {
                     ui.set_width(LIST_WIDTH);
-                    self.list(ui, palette)
+                    list(self, ui, palette)
                 })
                 .inner;
             let (rect, _) = ui.allocate_exact_size(vec2(1.0, height), Sense::hover());
@@ -181,7 +251,7 @@ impl App {
             let width = ui.available_width();
             ui.allocate_ui_with_layout(vec2(width, height), column, |ui| {
                 ui.set_width(width);
-                self.preview_pane(ui, palette);
+                preview(self, ui, palette);
             });
             command
         })
@@ -311,6 +381,7 @@ impl App {
             vec2(ui.available_width(), FOOTER_HEIGHT),
             Layout::left_to_right(Align::Center),
             |ui| {
+                let footer = ui.max_rect();
                 ui.add_space(16.0);
                 if let Some(error) = &self.error {
                     ui.add(
@@ -321,7 +392,9 @@ impl App {
                         )
                         .truncate(),
                     );
-                } else if self.sheet.is_none() {
+                } else if self.sheet.is_none()
+                    && !(self.secrets_mode() && self.copied_note(ui, palette, footer))
+                {
                     ui.label(
                         RichText::new(self.count_label())
                             .size(12.0)
@@ -350,26 +423,18 @@ impl App {
                         );
                     }
                     ui.add_space(4.0);
-                    if self.sheet.is_some() {
+                    if let Some(sheet) = &self.sheet {
+                        sheets::footer_hints(ui, palette, sheet);
                         return;
                     }
-                    if self.secrets_mode() {
-                        if let Some(secret) = self.secrets.get(self.selected)
-                            && (controls::Pill {
-                                icon: None,
-                                label: "Copy \u{00B7} clears in 90 s",
-                                keys: &["\u{21A9}"],
-                                strong: false,
-                                active: false,
-                            })
-                            .show(ui, palette)
-                            .clicked()
-                        {
-                            command = Some(Command::CopySecret(secret.id));
-                        }
-                        return;
-                    }
-                    let Some(id) = self.entries.get(self.selected).map(|e| e.id) else {
+                    let copy = if self.secrets_mode() {
+                        self.secrets
+                            .get(self.selected)
+                            .map(|s| Command::CopySecret(s.id))
+                    } else {
+                        self.entries.get(self.selected).map(|e| Command::Copy(e.id))
+                    };
+                    let Some(copy) = copy else {
                         return;
                     };
                     if (controls::Pill {
@@ -400,7 +465,7 @@ impl App {
                     .show(ui, palette)
                     .clicked()
                     {
-                        command = Some(Command::Copy(id));
+                        command = Some(copy);
                     }
                 });
             },

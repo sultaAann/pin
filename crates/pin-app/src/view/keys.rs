@@ -29,8 +29,13 @@ impl App {
             return Some(Command::Quit);
         }
         if self.sheet.is_some() {
-            return pressed(Key::Escape, Modifiers::NONE)
-                .then_some(Command::Sheet(SheetAction::Cancel));
+            if pressed(Key::Escape, Modifiers::NONE) {
+                return Some(Command::Sheet(SheetAction::Cancel));
+            }
+            // Fields submit on Enter themselves; this covers sheets with no field in focus. A held
+            // Enter that opened the sheet must not confirm it by key repeat.
+            let typing = ctx.egui_wants_keyboard_input();
+            return (!typing && fresh_enter(ctx)).then_some(Command::Sheet(SheetAction::Submit));
         }
         if pressed(Key::Enter, Modifiers::COMMAND) {
             self.toggle_actions();
@@ -64,7 +69,11 @@ impl App {
             if self.query.is_empty() {
                 return Some(Command::Hide);
             }
-            self.query.clear();
+            if self.secrets_mode() && !self.secret_query().is_empty() {
+                self.query = crate::app::PREFIX.to_string();
+            } else {
+                self.query.clear();
+            }
             self.select(0);
             self.refresh();
             return None;
@@ -79,8 +88,7 @@ impl App {
             pressed(Key::S, Modifiers::COMMAND),
         );
         if self.secrets_mode() {
-            let index = number.or(enter.then_some(self.selected))?;
-            return self.secrets.get(index).map(|s| Command::CopySecret(s.id));
+            return self.secret_keys(&pressed, number, enter, delete);
         }
         if let Some(index) = number {
             return self.entries.get(index).map(|entry| Command::Copy(entry.id));
@@ -99,6 +107,32 @@ impl App {
         }
     }
 
+    fn secret_keys(
+        &self,
+        pressed: &impl Fn(Key, Modifiers) -> bool,
+        number: Option<usize>,
+        enter: bool,
+        delete: bool,
+    ) -> Option<Command> {
+        if pressed(Key::L, Modifiers::COMMAND) {
+            return Some(Command::LockSecrets);
+        }
+        let edit = pressed(Key::E, Modifiers::COMMAND);
+        if let Some(index) = number {
+            return self.secrets.get(index).map(|s| Command::CopySecret(s.id));
+        }
+        let secret = self.secrets.get(self.selected)?;
+        if enter {
+            Some(Command::CopySecret(secret.id))
+        } else if delete {
+            Some(Command::DeleteSecret(secret.id))
+        } else if edit {
+            Some(Command::EditSecret(secret.id))
+        } else {
+            None
+        }
+    }
+
     fn actions_keyboard(&mut self, pressed: &impl Fn(Key, Modifiers) -> bool) -> Option<Command> {
         if pressed(Key::Escape, Modifiers::NONE) {
             self.actions_back();
@@ -107,15 +141,17 @@ impl App {
         // Tab would move focus out of the panel's search field into the main search.
         pressed(Key::Tab, Modifiers::SHIFT);
         pressed(Key::Tab, Modifiers::NONE);
-        let pinned = self.actions_entry()?.pin.is_pinned();
-        let shortcut = if pressed(Key::P, Modifiers::COMMAND) {
-            Some(EntryAction::Pin(!pinned))
-        } else if pressed(Key::S, Modifiers::COMMAND) {
-            Some(EntryAction::MoveToSecrets)
-        } else if pressed(Key::Backspace, Modifiers::COMMAND) {
+        let pinned = self.actions_entry().map(|e| e.pin.is_pinned());
+        let shortcut = if pressed(Key::Backspace, Modifiers::COMMAND) {
             Some(EntryAction::Delete)
+        } else if let Some(pinned) = pinned {
+            if pressed(Key::P, Modifiers::COMMAND) {
+                Some(EntryAction::Pin(!pinned))
+            } else {
+                pressed(Key::S, Modifiers::COMMAND).then_some(EntryAction::MoveToSecrets)
+            }
         } else {
-            None
+            pressed(Key::E, Modifiers::COMMAND).then_some(EntryAction::Edit)
         };
         if let Some(action) = shortcut {
             return self.choose(action);
@@ -144,4 +180,23 @@ impl App {
             self.scroll_to_selected = true;
         }
     }
+}
+
+/// Consumes a plain Enter press, ignoring auto-repeat.
+fn fresh_enter(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|i| {
+        let at = i.events.iter().position(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: Key::Enter,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if modifiers.is_none()
+            )
+        });
+        at.map(|at| i.events.remove(at)).is_some()
+    })
 }

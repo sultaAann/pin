@@ -1,6 +1,6 @@
 use eframe::egui::{
-    self, Align2, Color32, FontId, Rect, Sense, Stroke, TextFormat, TextureHandle, Vec2, pos2,
-    text::LayoutJob, vec2,
+    self, Align2, Color32, FontId, Rect, Sense, Stroke, TextureHandle, Vec2, pos2, text::LayoutJob,
+    vec2,
 };
 use pin_core::{Entry, Pin, Timestamp};
 
@@ -8,12 +8,10 @@ use super::format;
 use super::icons::{self, Icon};
 use super::text;
 use super::theme::{CMD, Palette};
-use crate::app::{Command, EntryAction, Item, Page, entry_items};
+use crate::app::{Command, EntryAction, Item, Page, Target, entry_items};
 use crate::hotkeys::slot_label;
 
-pub(super) const HEIGHT: f32 = 36.0;
 pub(super) const ENTRY_HEIGHT: f32 = 46.0;
-const ICON: f32 = 24.0;
 const TILE: Vec2 = Vec2::new(40.0, 30.0);
 
 /// One history entry in the list: icon or thumbnail, first line, source app and time.
@@ -55,11 +53,8 @@ impl Row<'_> {
 
     fn paint(&self, ui: &egui::Ui, rect: Rect, hovered: bool, palette: &Palette) {
         let painter = ui.painter_at(rect);
-        Look::background(&painter, rect, self.selected, hovered, palette);
-        let thumb = Rect::from_min_size(
-            pos2(rect.left() + 6.0, rect.center().y - TILE.y / 2.0),
-            TILE,
-        );
+        background(&painter, rect, self.selected, hovered, palette);
+        let thumb = slot(rect);
         if let Some(texture) = &self.thumbnail {
             painter.rect_filled(thumb, 5.0, palette.icon);
             let size = texture.size_vec2();
@@ -69,10 +64,8 @@ impl Row<'_> {
                 .corner_radius(4)
                 .paint_at(ui, image);
         } else {
-            let square = Rect::from_center_size(thumb.center(), vec2(30.0, 30.0));
-            icons::tile(&painter, square, format::icon(self.entry), palette);
+            tile(&painter, rect, format::icon(self.entry), palette);
         }
-        let left = thumb.right() + 10.0;
         let right = match self.entry.pin {
             Pin::Slot(slot) => badge(
                 &painter,
@@ -83,80 +76,72 @@ impl Row<'_> {
             ),
             _ => index_hint(&painter, rect, self.index, palette.secondary),
         };
-        let width = right - left;
-        let title = painter.layout_job(text::one_line(
-            text::highlighted(
-                format::title(self.entry),
-                self.query,
-                FontId::proportional(13.0),
-                palette.text,
-                palette.hit,
-            ),
-            width,
-        ));
-        painter.galley(
-            pos2(left, rect.center().y - 1.0 - title.size().y),
-            title,
+        let title = text::highlighted(
+            format::title(self.entry),
+            self.query,
+            FontId::proportional(13.0),
             palette.text,
+            palette.hit,
         );
-        let subtitle = painter.layout_job(text::one_line(
-            text::plain(
-                &format::subtitle(self.entry, self.now),
-                11.5,
-                palette.secondary,
-            ),
-            width,
-        ));
-        painter.galley(
-            pos2(left, rect.center().y + 2.0),
-            subtitle,
-            palette.secondary,
-        );
+        let subtitle = format::subtitle(self.entry, self.now);
+        two_lines(&painter, rect, right, title, &subtitle, palette);
     }
 }
 
-pub(super) struct Look {
-    pub text: Color32,
-    pub secondary: Color32,
-    pub left: f32,
+pub(super) fn background(
+    painter: &egui::Painter,
+    rect: Rect,
+    selected: bool,
+    hovered: bool,
+    palette: &Palette,
+) {
+    if selected {
+        painter.rect_filled(rect, 8.0, palette.selection);
+    } else if hovered {
+        painter.rect_filled(rect, 8.0, palette.hover);
+    }
 }
 
-impl Look {
-    fn background(
-        painter: &egui::Painter,
-        rect: Rect,
-        selected: bool,
-        hovered: bool,
-        palette: &Palette,
-    ) {
-        if selected {
-            painter.rect_filled(rect, 8.0, palette.selection);
-        } else if hovered {
-            painter.rect_filled(rect, 8.0, palette.hover);
-        }
-    }
+/// The thumbnail slot at the left of a row.
+fn slot(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        pos2(rect.left() + 6.0, rect.center().y - TILE.y / 2.0),
+        TILE,
+    )
+}
 
-    /// Background and icon tile of a single-line row, as used for secrets.
-    pub(super) fn paint(
-        painter: &egui::Painter,
-        rect: Rect,
-        selected: bool,
-        hovered: bool,
-        palette: &Palette,
-        icon: Icon,
-    ) -> Self {
-        Self::background(painter, rect, selected, hovered, palette);
-        let tile = Rect::from_center_size(
-            pos2(rect.left() + 8.0 + ICON / 2.0, rect.center().y),
-            vec2(ICON, ICON),
-        );
-        icons::tile(painter, tile, icon, palette);
-        Self {
-            text: palette.text,
-            secondary: palette.secondary,
-            left: tile.right() + 10.0,
-        }
-    }
+/// The icon tile centred in a row's thumbnail slot.
+pub(super) fn tile(painter: &egui::Painter, rect: Rect, icon: Icon, palette: &Palette) {
+    let square = Rect::from_center_size(slot(rect).center(), vec2(30.0, 30.0));
+    icons::tile(painter, square, icon, palette);
+}
+
+/// Title and subtitle between the thumbnail slot and `right`, each cut to one line.
+pub(super) fn two_lines(
+    painter: &egui::Painter,
+    rect: Rect,
+    right: f32,
+    title: LayoutJob,
+    subtitle: &str,
+    palette: &Palette,
+) {
+    let left = slot(rect).right() + 10.0;
+    let width = right - left;
+    let title = painter.layout_job(text::one_line(title, width));
+    painter.galley(
+        pos2(left, rect.center().y - 1.0 - title.size().y),
+        title,
+        palette.text,
+    );
+    let subtitle = painter.layout_job(text::one_line(
+        text::plain(subtitle, 11.5, palette.secondary),
+        width,
+    ));
+    painter.galley(
+        pos2(left, rect.center().y + 2.0),
+        subtitle,
+        palette.secondary,
+    );
 }
 
 pub(super) fn index_hint(painter: &egui::Painter, rect: Rect, index: usize, color: Color32) -> f32 {
@@ -172,29 +157,6 @@ pub(super) fn index_hint(painter: &egui::Painter, rect: Rect, index: usize, colo
         color,
     );
     hint.left() - 10.0
-}
-
-pub(super) fn title(
-    painter: &egui::Painter,
-    rect: Rect,
-    left: f32,
-    right: f32,
-    text: &str,
-    color: Color32,
-) {
-    let mut job = LayoutJob::single_section(
-        text.to_owned(),
-        TextFormat::simple(FontId::proportional(13.5), color),
-    );
-    job.wrap.max_width = (right - left).max(0.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    let galley = painter.layout_job(job);
-    painter.galley(
-        pos2(left, rect.center().y - galley.size().y / 2.0),
-        galley,
-        color,
-    );
 }
 
 fn badge(painter: &egui::Painter, right: f32, y: f32, label: &str, palette: &Palette) -> f32 {
@@ -243,10 +205,10 @@ fn context_menu(ui: &mut egui::Ui, entry: &Entry) -> Option<Command> {
             chosen = Some(item.action);
         }
     }
-    chosen.and_then(|action| action.command(entry.id))
+    chosen.and_then(|action| action.command(Target::Entry(entry.id)))
 }
 
-fn menu_button(ui: &mut egui::Ui, item: &Item, pin: Pin) -> bool {
+pub(super) fn menu_button(ui: &mut egui::Ui, item: &Item, pin: Pin) -> bool {
     let button = if matches!(item.action, EntryAction::Slot(_)) {
         egui::Button::selectable(item.current, item.label.as_str())
     } else {

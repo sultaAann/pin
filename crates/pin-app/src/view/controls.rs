@@ -101,7 +101,7 @@ fn cap_gap(index: usize) -> f32 {
 }
 
 /// Paints a key cap whose left edge is at `at`; returns its right edge.
-fn keycap(
+pub fn keycap(
     painter: &egui::Painter,
     palette: &Palette,
     at: egui::Pos2,
@@ -113,4 +113,118 @@ fn keycap(
     let size = galley.size();
     painter.galley(rect.center() - size / 2.0, galley, palette.secondary);
     rect.right()
+}
+
+/// Key caps laid out inline, e.g. "⌘ S" in a sentence.
+pub fn keycaps(ui: &mut Ui, palette: &Palette, keys: &[&str]) {
+    let caps: Vec<_> = keys
+        .iter()
+        .map(|k| {
+            ui.painter().layout_no_wrap(
+                (*k).to_owned(),
+                FontId::proportional(11.0),
+                palette.secondary,
+            )
+        })
+        .collect();
+    let width = caps
+        .iter()
+        .enumerate()
+        .map(|(i, g)| if i == 0 { 0.0 } else { 2.0 } + (g.size().x + 8.0).max(CAP))
+        .sum::<f32>();
+    let (rect, _) = ui.allocate_exact_size(vec2(width, CAP), Sense::hover());
+    let mut x = rect.left();
+    for (i, cap) in caps.into_iter().enumerate() {
+        let gap = if i == 0 { 0.0 } else { 2.0 };
+        x = keycap(ui.painter(), palette, pos2(x + gap, rect.center().y), cap);
+    }
+}
+
+/// A key cap followed by what the key does, for keys that have no button.
+pub fn hint(ui: &mut Ui, palette: &Palette, key: &str, label: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let label = egui::RichText::new(label)
+            .size(12.0)
+            .color(palette.tertiary);
+        // Inside a right-to-left row the first widget lands rightmost, so the cap goes second.
+        if ui.layout().main_dir() == egui::Direction::RightToLeft {
+            ui.label(label);
+            keycaps(ui, palette, &[key]);
+        } else {
+            keycaps(ui, palette, &[key]);
+            ui.label(label);
+        }
+    });
+}
+
+/// A secondary button with a border on the field colour, optionally `width` wide.
+pub fn bordered(
+    ui: &mut Ui,
+    palette: &Palette,
+    icon: Option<Icon>,
+    label: &str,
+    width: Option<f32>,
+) -> Response {
+    let text =
+        ui.painter()
+            .layout_no_wrap(label.to_owned(), FontId::proportional(13.0), palette.text);
+    let icon_width = if icon.is_some() { 21.0 } else { 0.0 };
+    let natural = 28.0 + icon_width + text.size().x;
+    let size = vec2(width.unwrap_or(natural).max(natural), 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, label));
+    let fill = if response.hovered() {
+        palette.hover
+    } else {
+        palette.field
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        7.0,
+        fill,
+        egui::Stroke::new(1.0, palette.border),
+        egui::StrokeKind::Inside,
+    );
+    let mut x = rect.center().x - (natural - 28.0) / 2.0;
+    if let Some(icon) = icon {
+        let glyph = Rect::from_center_size(pos2(x + 7.0, rect.center().y), vec2(14.0, 14.0));
+        icons::paint(painter, glyph, icon, palette.text);
+        x += icon_width;
+    }
+    painter.galley(
+        pos2(x, rect.center().y - text.size().y / 2.0),
+        text,
+        palette.text,
+    );
+    response
+}
+
+/// The main button of a sheet, filled with `fill`; disabled buttons are dimmed and ignore clicks.
+pub fn primary(ui: &mut Ui, label: &str, fill: Color32, enabled: bool) -> Response {
+    let text =
+        ui.painter()
+            .layout_no_wrap(label.to_owned(), FontId::proportional(13.0), Color32::WHITE);
+    let size = vec2((text.size().x + 28.0).max(88.0), 32.0);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, enabled, label));
+    let alpha = if enabled { 1.0 } else { 0.4 };
+    let fill = if enabled && response.hovered() {
+        fill.gamma_multiply(0.9)
+    } else {
+        fill.gamma_multiply(alpha)
+    };
+    ui.painter().rect_filled(rect, 7.0, fill);
+    ui.painter().galley(
+        rect.center() - text.size() / 2.0,
+        text,
+        Color32::WHITE.gamma_multiply(alpha),
+    );
+    response
 }

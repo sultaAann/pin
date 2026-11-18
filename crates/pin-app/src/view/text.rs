@@ -8,6 +8,17 @@ pub fn highlighted(
     color: Color32,
     hit: Color32,
 ) -> LayoutJob {
+    marked(text, &pin_core::match_ranges(text, query), font, color, hit)
+}
+
+/// `text` with each of `ranges` on a highlight background.
+pub fn marked(
+    text: &str,
+    ranges: &[std::ops::Range<usize>],
+    font: FontId,
+    color: Color32,
+    hit: Color32,
+) -> LayoutJob {
     let plain = TextFormat::simple(font, color);
     let marked = TextFormat {
         background: hit,
@@ -15,7 +26,7 @@ pub fn highlighted(
     };
     let mut job = LayoutJob::default();
     let mut at = 0;
-    for range in pin_core::match_ranges(text, query) {
+    for range in ranges {
         job.append(&text[at..range.start], 0.0, plain.clone());
         job.append(&text[range.clone()], 0.0, marked.clone());
         at = range.end;
