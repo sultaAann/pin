@@ -11,8 +11,15 @@ publish = false
 
 [workspace.dependencies]
 pin-core = { path = "crates/pin-core" }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 blake3 = "1.8"
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 eframe = "0.37"
+getrandom = "0.4"
+keyring-core = "1"
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+windows-native-keyring-store = { version = "1", default-features = false }
+dbus-secret-service-keyring-store = { version = "1", features = ["vendored", "crypto-openssl"] }
 rusqlite = "0.43"
 tempfile = "3.27"
 thiserror = "2.0"
