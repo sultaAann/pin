@@ -11,7 +11,12 @@ publish = false
 
 [workspace.dependencies]
 pin-core = { path = "crates/pin-core" }
+blake3 = "1.8"
 eframe = "0.37"
+rusqlite = "0.43"
+tempfile = "3.27"
+thiserror = "2.0"
+zeroize = "1.9"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -21,6 +26,8 @@ unused_must_use = "deny"
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 unwrap_used = "warn"
 expect_used = "warn"
 dbg_macro = "warn"
