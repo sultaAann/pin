@@ -1,0 +1,18 @@
+[package]
+name = "pin-cli"
+description = "Command-line interface for pin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pin"
+path = "src/main.rs"
+
+[dependencies]
+pin-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "pin-app"
+description = "Desktop clipboard manager UI for pin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eframe.workspace = true
+pin-core.workspace = true
+
+[lints]
+workspace = true
