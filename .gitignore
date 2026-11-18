@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.DS_Store
+.idea/
+.vscode/
+*.db
+*.db-*
+.claude/settings.local.json
