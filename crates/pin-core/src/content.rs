@@ -154,6 +154,8 @@ fn files_preview(data: &[u8]) -> String {
         .unwrap_or(first);
     let name = percent_decode(name);
     match files.count() {
+        // A trailing slash tells the list a lone folder from a lone file without loading paths.
+        0 if first.ends_with('/') => format!("{name}/"),
         0 => name,
         rest => format!("{name} (+{rest})"),
     }
@@ -230,6 +232,7 @@ mod tests {
     fn files_preview_shows_first_name_and_count() {
         let list = b"file:///tmp/a.txt\r\nfile:///tmp/dir/\r\nfile:///tmp/c.png\r\n";
         assert_eq!(files_preview(list), "a.txt (+2)");
+        assert_eq!(files_preview(b"file:///tmp/my%20dir/\r\n"), "my dir/");
     }
 
     #[test]

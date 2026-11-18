@@ -3,18 +3,33 @@ use pin_core::{Entry, Filter, FormatKind, Timestamp};
 use super::icons::Icon;
 
 pub fn title(entry: &Entry) -> &str {
-    entry
+    let title = entry
         .preview
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or_else(|| entry.kind.as_str())
+        .unwrap_or_else(|| entry.kind.as_str());
+    if is_folder(entry) {
+        title.strip_suffix('/').unwrap_or(title)
+    } else {
+        title
+    }
+}
+
+/// A single copied folder: its preview keeps the folder's trailing slash.
+fn is_folder(entry: &Entry) -> bool {
+    entry.kind == FormatKind::Files && entry.preview.len() > 1 && entry.preview.ends_with('/')
+}
+
+fn is_several_files(entry: &Entry) -> bool {
+    entry.kind == FormatKind::Files && entry.preview.ends_with(')') && entry.preview.contains(" (+")
 }
 
 pub fn icon(entry: &Entry) -> Icon {
     match entry.kind {
         FormatKind::Png => Icon::Image,
-        FormatKind::Files => Icon::Folder,
+        FormatKind::Files if is_several_files(entry) => Icon::Files,
+        FormatKind::Files => super::filetype::icon(&entry.preview),
         FormatKind::Html | FormatKind::Rtf => Icon::Rich,
         FormatKind::Text if Filter::Links.matches(entry) => Icon::Link,
         FormatKind::Text => Icon::Text,
@@ -33,6 +48,7 @@ pub fn subtitle(entry: &Entry, now: Timestamp) -> String {
 pub fn kind_label(entry: &Entry, files: usize) -> String {
     match entry.kind {
         FormatKind::Png => "Image".to_owned(),
+        FormatKind::Files if is_folder(entry) => "Folder".to_owned(),
         FormatKind::Files if files == 1 => "1 File".to_owned(),
         FormatKind::Files => format!("{files} Files"),
         FormatKind::Html | FormatKind::Rtf => "Rich Text".to_owned(),

@@ -36,9 +36,50 @@ pub struct Palette {
     pub well: Color32,
     pub menu: Color32,
     pub danger: Color32,
+    pub dark: bool,
+}
+
+/// Colour families for icon tiles, one per kind of content or file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hue {
+    Grey,
+    Blue,
+    Orange,
+    Purple,
+    Green,
+    Red,
+    Teal,
+    Pink,
+    Amber,
+    Indigo,
+    Slate,
 }
 
 impl Palette {
+    /// Glyph colour of `hue`; each shade keeps 4.5:1 contrast against its own tile.
+    pub fn hue(&self, hue: Hue) -> Color32 {
+        let (light, dark) = match hue {
+            Hue::Grey => ([0x5B, 0x61, 0x6B], [0xB4, 0xB8, 0xC0]),
+            Hue::Blue => ([0x0A, 0x63, 0xC9], [0x62, 0xAE, 0xFF]),
+            Hue::Orange => ([0xB4, 0x50, 0x0B], [0xFF, 0xA0, 0x5A]),
+            Hue::Purple => ([0x73, 0x39, 0xC8], [0xBE, 0x93, 0xFF]),
+            Hue::Green => ([0x1D, 0x7F, 0x38], [0x5F, 0xD6, 0x7E]),
+            Hue::Red => ([0xBF, 0x2A, 0x1C], [0xFF, 0x7D, 0x73]),
+            Hue::Teal => ([0x0B, 0x74, 0x80], [0x55, 0xD3, 0xDE]),
+            Hue::Pink => ([0xB5, 0x22, 0x72], [0xFF, 0x7C, 0xC2]),
+            Hue::Amber => ([0x8C, 0x5E, 0x00], [0xF5, 0xC4, 0x51]),
+            Hue::Indigo => ([0x48, 0x40, 0xD6], [0x9C, 0x98, 0xFF]),
+            Hue::Slate => ([0x3B, 0x57, 0xA3], [0x93, 0xAA, 0xF5]),
+        };
+        let [r, g, b] = if self.dark { dark } else { light };
+        Color32::from_rgb(r, g, b)
+    }
+
+    /// Tile behind a glyph of `hue`: the same colour at low opacity.
+    pub fn hue_tile(&self, hue: Hue) -> Color32 {
+        let [r, g, b, _] = self.hue(hue).to_array();
+        Color32::from_rgba_unmultiplied(r, g, b, if self.dark { 51 } else { 33 })
+    }
     pub fn of(ctx: &egui::Context) -> Self {
         // Grey text shades keep 4.5:1 contrast against the background, even at 11 px.
         if ctx.global_style().visuals.dark_mode {
@@ -61,6 +102,7 @@ impl Palette {
                 well: Color32::from_white_alpha(10),
                 menu: Color32::from_rgb(46, 46, 49),
                 danger: Color32::from_rgb(255, 107, 107),
+                dark: true,
             }
         } else {
             Self {
@@ -82,6 +124,7 @@ impl Palette {
                 well: Color32::from_black_alpha(9),
                 menu: Color32::WHITE,
                 danger: Color32::from_rgb(196, 0, 26),
+                dark: false,
             }
         }
     }

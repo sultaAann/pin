@@ -1,9 +1,10 @@
 use eframe::egui::{
-    self, Align, FontId, Frame, Label, Layout, Margin, Rect, RichText, ScrollArea, Sense,
+    self, Align, Align2, FontId, Frame, Label, Layout, Margin, Rect, RichText, ScrollArea, Sense,
     TextureHandle, pos2, vec2,
 };
 use pin_core::{Details, Entry, Filter, FormatKind, Pin, Timestamp};
 
+use super::filetype;
 use super::format;
 use super::icons::{self, Icon};
 use super::text;
@@ -24,10 +25,11 @@ impl App {
             .then(|| self.thumbnail(entry.id))
             .flatten();
         let query = self.query.trim().to_owned();
-        let details = self.selected_details();
+        let shown = self.selected_preview();
         Pane {
             entry: &entry,
-            details,
+            details: shown.map(|s| &s.details),
+            missing: shown.map_or(&[][..], |s| s.missing.as_slice()),
             thumbnail,
             query: &query,
             now: Timestamp::now(),
@@ -39,6 +41,7 @@ impl App {
 struct Pane<'a> {
     entry: &'a Entry,
     details: Option<&'a Details>,
+    missing: &'a [bool],
     thumbnail: Option<TextureHandle>,
     query: &'a str,
     now: Timestamp,
@@ -162,7 +165,7 @@ impl Pane<'_> {
         Self::well(ui, palette, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing = vec2(12.0, 4.0);
-                tile(ui, palette, Icon::Link, 36.0, palette.accent_text);
+                tile(ui, palette, Icon::Link, 36.0);
                 ui.vertical(|ui| {
                     ui.label(
                         RichText::new(format::domain(url))
@@ -216,8 +219,9 @@ impl Pane<'_> {
             .inner_margin(Margin::same(6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                for path in paths.iter().take(MAX_FILES) {
-                    file_row(ui, palette, path);
+                for (index, path) in paths.iter().enumerate().take(MAX_FILES) {
+                    let missing = self.missing.get(index).copied().unwrap_or(false);
+                    file_row(ui, palette, path, missing);
                 }
                 if paths.len() > MAX_FILES {
                     ui.add_space(4.0);
@@ -228,6 +232,19 @@ impl Pane<'_> {
                     );
                 }
             });
+        let gone = self.missing.iter().filter(|&&m| m).count();
+        if gone > 0 {
+            let note = match (gone, paths.len()) {
+                (1, 1) => "This file no longer exists, so it can\u{2019}t be pasted.".to_owned(),
+                (g, n) if g == n => {
+                    "These files no longer exist, so they can\u{2019}t be pasted.".to_owned()
+                }
+                (1, _) => "1 file no longer exists and won\u{2019}t be pasted.".to_owned(),
+                (g, _) => format!("{g} files no longer exist and won\u{2019}t be pasted."),
+            };
+            ui.add_space(8.0);
+            ui.label(RichText::new(note).size(12.0).color(palette.danger));
+        }
     }
 
     fn meta(&self, ui: &mut egui::Ui, palette: &Palette) {
@@ -284,19 +301,17 @@ impl Pane<'_> {
     }
 }
 
-fn tile(ui: &mut egui::Ui, palette: &Palette, icon: Icon, size: f32, color: egui::Color32) {
+fn tile(ui: &mut egui::Ui, palette: &Palette, icon: Icon, size: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-    ui.painter().rect_filled(rect, size / 4.5, palette.icon);
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(rect.center(), vec2(size / 2.0, size / 2.0)),
-        icon,
-        color,
-    );
+    icons::tile(ui.painter(), rect, icon, palette);
 }
 
-fn file_row(ui: &mut egui::Ui, palette: &Palette, path: &str) {
-    let folder = path.ends_with('/');
+fn file_row(ui: &mut egui::Ui, palette: &Palette, path: &str, missing: bool) {
+    let icon = if missing {
+        Icon::Missing
+    } else {
+        filetype::icon(path)
+    };
     let trimmed = path.trim_end_matches('/');
     let (dir, name) = trimmed
         .rsplit_once('/')
@@ -307,20 +322,30 @@ fn file_row(ui: &mut egui::Ui, palette: &Palette, path: &str) {
         pos2(rect.left() + 8.0, rect.center().y - 14.0),
         vec2(28.0, 28.0),
     );
-    painter.rect_filled(square, 6.0, palette.icon);
-    icons::paint(
-        &painter,
-        Rect::from_center_size(square.center(), vec2(15.0, 15.0)),
-        if folder { Icon::Folder } else { Icon::File },
-        palette.secondary,
-    );
+    icons::tile(&painter, square, icon, palette);
     let left = square.right() + 10.0;
-    let width = rect.right() - 8.0 - left;
-    let name = painter.layout_job(text::one_line(text::plain(name, 13.0, palette.text), width));
+    let mut right = rect.right() - 8.0;
+    if missing {
+        let tag = painter.text(
+            pos2(right, rect.center().y),
+            Align2::RIGHT_CENTER,
+            "Missing",
+            FontId::proportional(11.5),
+            palette.danger,
+        );
+        right = tag.left() - 10.0;
+    }
+    let width = right - left;
+    let color = if missing {
+        palette.tertiary
+    } else {
+        palette.text
+    };
+    let name = painter.layout_job(text::one_line(text::plain(name, 13.0, color), width));
     painter.galley(
         pos2(left, rect.center().y - 1.0 - name.size().y),
         name,
-        palette.text,
+        color,
     );
     let dir = if dir.is_empty() { "/" } else { dir };
     let dir = painter.layout_job(text::one_line(

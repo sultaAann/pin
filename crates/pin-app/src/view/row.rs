@@ -70,13 +70,7 @@ impl Row<'_> {
                 .paint_at(ui, image);
         } else {
             let square = Rect::from_center_size(thumb.center(), vec2(30.0, 30.0));
-            painter.rect_filled(square, 7.0, palette.icon);
-            icons::paint(
-                &painter,
-                Rect::from_center_size(square.center(), vec2(16.0, 16.0)),
-                format::icon(self.entry),
-                palette.secondary,
-            );
+            icons::tile(&painter, square, format::icon(self.entry), palette);
         }
         let left = thumb.right() + 10.0;
         let right = match self.entry.pin {
@@ -156,13 +150,7 @@ impl Look {
             pos2(rect.left() + 8.0 + ICON / 2.0, rect.center().y),
             vec2(ICON, ICON),
         );
-        painter.rect_filled(tile, 6.0, palette.icon);
-        icons::paint(
-            painter,
-            Rect::from_center_size(tile.center(), vec2(14.0, 14.0)),
-            icon,
-            palette.secondary,
-        );
+        icons::tile(painter, tile, icon, palette);
         Self {
             text: palette.text,
             secondary: palette.secondary,

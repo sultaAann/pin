@@ -2,6 +2,8 @@ use std::f32::consts::{FRAC_1_SQRT_2, PI};
 
 use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 
+use super::theme::{Hue, Palette};
+
 /// Line icons drawn with the painter, so they tint with the theme and need no image assets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
@@ -13,6 +15,15 @@ pub enum Icon {
     Image,
     Folder,
     File,
+    Files,
+    Doc,
+    Pdf,
+    Code,
+    Media,
+    Archive,
+    Sheet,
+    App,
+    Missing,
     Lock,
     Key,
     Pin,
@@ -21,6 +32,50 @@ pub enum Icon {
     Trash,
     Chevron,
     Clipboard,
+}
+
+impl Icon {
+    /// Colour family of the icon's tile; one per kind of content or file.
+    pub fn hue(self) -> Hue {
+        match self {
+            Self::Link | Self::Folder => Hue::Blue,
+            Self::Rich => Hue::Orange,
+            Self::Image => Hue::Purple,
+            Self::Doc => Hue::Slate,
+            Self::Pdf => Hue::Red,
+            Self::Code => Hue::Green,
+            Self::Media => Hue::Pink,
+            Self::Archive | Self::Key => Hue::Amber,
+            Self::Sheet => Hue::Teal,
+            Self::App => Hue::Indigo,
+            _ => Hue::Grey,
+        }
+    }
+}
+
+/// A rounded tile in the icon's colour family with the glyph on it; missing files get a badge.
+pub fn tile(painter: &Painter, rect: Rect, icon: Icon, palette: &Palette) {
+    let size = rect.width();
+    painter.rect_filled(rect, size * 0.24, palette.hue_tile(icon.hue()));
+    let glyph = Rect::from_center_size(rect.center(), Vec2::splat(size * 0.56));
+    paint(painter, glyph, icon, palette.hue(icon.hue()));
+    if icon == Icon::Missing {
+        let radius = (size * 0.21).max(4.0);
+        let center = rect.right_bottom() - Vec2::splat(radius * 0.6);
+        painter.circle(
+            center,
+            radius,
+            palette.hue(Hue::Red),
+            Stroke::new(2.0, palette.background),
+        );
+        let arm = radius * 0.42;
+        let stroke = Stroke::new((radius * 0.3).max(1.2), Color32::WHITE);
+        painter.line_segment(
+            [center - Vec2::splat(arm), center + Vec2::splat(arm)],
+            stroke,
+        );
+        painter.line_segment([center + vec2(arm, -arm), center + vec2(-arm, arm)], stroke);
+    }
 }
 
 /// Paints `icon` into a square `rect`; coordinates below are on a 24-unit grid.
@@ -58,6 +113,31 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             pen.circle(8.5, 10.0, 1.5);
             pen.line(&[(21.0, 16.0), (16.0, 11.0), (6.0, 19.0)]);
         }
+        Icon::Clipboard => {
+            pen.rect((5.0, 4.0), (14.0, 17.0), 2.0);
+            pen.rect((9.0, 2.5), (6.0, 3.0), 1.0);
+        }
+        Icon::Key => {
+            pen.circle(8.0, 15.0, 4.0);
+            pen.line(&[(11.0, 12.0), (20.0, 3.0)]);
+            pen.line(&[(17.0, 6.0), (20.0, 9.0)]);
+            pen.line(&[(15.0, 8.0), (17.0, 10.0)]);
+        }
+        _ => paint_files(&pen, icon),
+    }
+}
+
+const PAGE: [(f32, f32); 5] = [
+    (6.0, 3.0),
+    (14.0, 3.0),
+    (19.0, 8.0),
+    (19.0, 21.0),
+    (6.0, 21.0),
+];
+const FOLD: [(f32, f32); 3] = [(14.0, 3.0), (14.0, 8.0), (19.0, 8.0)];
+
+fn paint_files(pen: &Pen<'_>, icon: Icon) {
+    match icon {
         Icon::Folder => pen.closed(&[
             (3.0, 6.0),
             (9.0, 6.0),
@@ -67,41 +147,89 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             (3.0, 19.0),
         ]),
         Icon::File => {
-            pen.closed(&[
-                (6.0, 3.0),
-                (14.0, 3.0),
-                (19.0, 8.0),
-                (19.0, 21.0),
-                (6.0, 21.0),
-            ]);
-            pen.line(&[(14.0, 3.0), (14.0, 8.0), (19.0, 8.0)]);
+            pen.closed(&PAGE);
+            pen.line(&FOLD);
         }
-        _ => paint_controls(&pen, icon),
+        Icon::Doc => {
+            pen.closed(&PAGE);
+            pen.line(&FOLD);
+            pen.line(&[(9.0, 13.0), (15.0, 13.0)]);
+            pen.line(&[(9.0, 17.0), (13.0, 17.0)]);
+        }
+        Icon::Pdf => {
+            pen.closed(&PAGE);
+            pen.line(&FOLD);
+            pen.line(&[
+                (8.5, 18.0),
+                (11.0, 15.5),
+                (12.0, 12.0),
+                (11.3, 10.8),
+                (10.4, 11.6),
+                (11.5, 14.0),
+                (14.0, 16.5),
+                (16.0, 17.0),
+                (15.8, 16.2),
+                (13.5, 15.8),
+                (11.5, 16.5),
+            ]);
+        }
+        Icon::Missing => {
+            let mut outline = PAGE.to_vec();
+            outline.push(PAGE[0]);
+            pen.dashed(&outline);
+            pen.line(&FOLD);
+        }
+        Icon::Files => {
+            pen.closed(&[
+                (8.0, 6.0),
+                (15.0, 6.0),
+                (19.0, 10.0),
+                (19.0, 21.0),
+                (8.0, 21.0),
+            ]);
+            pen.line(&[(15.0, 6.0), (15.0, 10.0), (19.0, 10.0)]);
+            pen.line(&[(5.0, 17.0), (5.0, 3.0), (13.0, 3.0)]);
+        }
+        Icon::Code => {
+            pen.line(&[(8.5, 8.0), (4.5, 12.0), (8.5, 16.0)]);
+            pen.line(&[(15.5, 8.0), (19.5, 12.0), (15.5, 16.0)]);
+            pen.line(&[(13.5, 5.5), (10.5, 18.5)]);
+        }
+        Icon::Media => {
+            pen.circle(12.0, 12.0, 9.0);
+            pen.closed(&[(10.0, 8.5), (10.0, 15.5), (16.0, 12.0)]);
+        }
+        Icon::Archive => {
+            pen.rect((4.0, 4.0), (16.0, 16.0), 2.0);
+            pen.line(&[(12.0, 4.0), (12.0, 6.0)]);
+            pen.line(&[(12.0, 8.0), (12.0, 10.0)]);
+            pen.line(&[(12.0, 12.0), (12.0, 13.0)]);
+            pen.rect((10.5, 14.0), (3.0, 3.5), 0.8);
+        }
+        Icon::Sheet => {
+            pen.rect((4.0, 4.0), (16.0, 16.0), 2.0);
+            pen.line(&[(4.0, 10.0), (20.0, 10.0)]);
+            pen.line(&[(4.0, 15.0), (20.0, 15.0)]);
+            pen.line(&[(10.0, 4.0), (10.0, 20.0)]);
+        }
+        Icon::App => {
+            pen.rect((4.5, 4.5), (6.0, 6.0), 1.6);
+            pen.rect((13.5, 4.5), (6.0, 6.0), 1.6);
+            pen.rect((4.5, 13.5), (6.0, 6.0), 1.6);
+            pen.rect((13.5, 13.5), (6.0, 6.0), 3.0);
+        }
+        _ => paint_controls(pen, icon),
     }
 }
 
 fn paint_controls(pen: &Pen<'_>, icon: Icon) {
     match icon {
-        Icon::Search
-        | Icon::Clear
-        | Icon::Text
-        | Icon::Rich
-        | Icon::Link
-        | Icon::Image
-        | Icon::Folder
-        | Icon::File => {}
         Icon::Lock => {
             pen.rect((5.0, 11.0), (14.0, 9.0), 2.0);
             let mut shackle = vec![(8.0, 11.0)];
             shackle.extend(arc(12.0, 8.0, 4.0, PI, 2.0 * PI));
             shackle.push((16.0, 11.0));
             pen.line(&shackle);
-        }
-        Icon::Key => {
-            pen.circle(8.0, 15.0, 4.0);
-            pen.line(&[(11.0, 12.0), (20.0, 3.0)]);
-            pen.line(&[(17.0, 6.0), (20.0, 9.0)]);
-            pen.line(&[(15.0, 8.0), (17.0, 10.0)]);
         }
         Icon::Pin => {
             pen.line(&[(9.0, 4.0), (15.0, 4.0)]);
@@ -143,10 +271,7 @@ fn paint_controls(pen: &Pen<'_>, icon: Icon) {
             pen.line(&[(14.0, 11.0), (14.0, 17.0)]);
         }
         Icon::Chevron => pen.line(&[(9.0, 6.0), (15.0, 12.0), (9.0, 18.0)]),
-        Icon::Clipboard => {
-            pen.rect((5.0, 4.0), (14.0, 17.0), 2.0);
-            pen.rect((9.0, 2.5), (6.0, 3.0), 1.0);
-        }
+        _ => {}
     }
 }
 
@@ -196,6 +321,16 @@ impl<'a> Pen<'a> {
     fn closed(&self, points: &[(f32, f32)]) {
         self.painter
             .add(Shape::closed_line(self.points(points), self.stroke));
+    }
+
+    fn dashed(&self, points: &[(f32, f32)]) {
+        let dash = 2.5 * self.scale;
+        self.painter.extend(Shape::dashed_line(
+            &self.points(points),
+            self.stroke,
+            dash,
+            dash,
+        ));
     }
 
     fn circle(&self, x: f32, y: f32, r: f32) {

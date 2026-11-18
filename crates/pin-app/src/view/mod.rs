@@ -1,5 +1,6 @@
 mod actions;
 mod controls;
+mod filetype;
 mod filters;
 mod format;
 mod icons;
@@ -481,4 +482,3 @@ fn section(ui: &mut egui::Ui, palette: &Palette, title: &str) {
 pub fn transparent() -> [f32; 4] {
     Color32::TRANSPARENT.to_normalized_gamma_f32()
 }
-https://terminals-admin.alif

@@ -320,7 +320,11 @@ impl SecretRow<'_> {
                 selected,
                 response.hovered(),
                 palette,
-                Icon::Key,
+                match secret.kind {
+                    pin_core::FormatKind::Png => Icon::Image,
+                    pin_core::FormatKind::Files => Icon::File,
+                    _ => Icon::Key,
+                },
             );
             let right = index_hint(&painter, rect, index, look.secondary);
             title(&painter, rect, look.left, right, &secret.name, look.text);
