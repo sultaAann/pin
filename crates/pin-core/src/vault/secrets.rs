@@ -14,6 +14,7 @@ use crate::store::{checkpoint, delete_entry, load_formats, write_tx};
 
 const AAD_SECRET_META: &[u8] = b"pin/secret/meta";
 const AAD_SECRET_FORMAT: &[u8] = b"pin/secret/format";
+const REVEAL_BYTES: usize = 16 * 1024;
 
 struct MetaRef<'a> {
     name: &'a str,
@@ -135,6 +136,23 @@ impl Vault<'_> {
             formats.push(Format { kind, data });
         }
         Ok(formats)
+    }
+
+    /// The secret's value as text for a deliberate reveal: its plain text cut to 16 KiB, or its
+    /// file paths one per line. Images have no text form and give `None`.
+    pub fn reveal(&mut self, id: SecretId) -> Result<Option<Zeroizing<String>>> {
+        let formats = self.formats(id)?;
+        let text = if formats.iter().any(|f| f.kind == FormatKind::Png) {
+            None
+        } else if let Some(text) = formats.iter().find(|f| f.kind == FormatKind::Text) {
+            Some(content::display_text(&text.data, REVEAL_BYTES))
+        } else {
+            formats
+                .iter()
+                .find(|f| f.kind == FormatKind::Files)
+                .map(|files| Zeroizing::new(content::file_paths(&files.data)).join("\n"))
+        };
+        Ok(text.map(Zeroizing::new))
     }
 
     #[expect(clippy::needless_pass_by_value)]

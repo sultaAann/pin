@@ -161,6 +161,44 @@ fn secret_roundtrips_all_formats_and_metadata() {
 }
 
 #[test]
+fn reveal_gives_text_or_paths_but_not_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = created(dir.path());
+    let text = store.vault().add(secret("text", "s3cret")).unwrap();
+    let files = store
+        .vault()
+        .add(NewSecret {
+            name: "key".into(),
+            note: String::new(),
+            formats: vec![Format::new(
+                FormatKind::Files,
+                "file:///Users/me/deploy%20key\r\nfile:///tmp/b\r\n",
+            )],
+        })
+        .unwrap();
+    let image = store
+        .vault()
+        .add(NewSecret {
+            name: "scan".into(),
+            note: String::new(),
+            formats: vec![
+                Format::new(FormatKind::Png, [0x89, b'P', b'N', b'G']),
+                Format::new(FormatKind::Text, "scan.png"),
+            ],
+        })
+        .unwrap();
+    let mut vault = store.vault();
+    assert_eq!(vault.reveal(text).unwrap().unwrap().as_str(), "s3cret");
+    assert_eq!(
+        vault.reveal(files).unwrap().unwrap().as_str(),
+        "/Users/me/deploy key\n/tmp/b"
+    );
+    assert!(vault.reveal(image).unwrap().is_none());
+    vault.lock();
+    assert!(matches!(vault.reveal(text), Err(Error::VaultLocked)));
+}
+
+#[test]
 fn secrets_are_sorted_by_name_ignoring_case() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = created(dir.path());
