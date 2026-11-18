@@ -82,6 +82,8 @@ pub enum Error {
     Corrupt,
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("no home directory to keep pin data in")]
+    NoDataDir,
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }

@@ -54,6 +54,10 @@ impl PinSlot {
     pub const fn get(self) -> u8 {
         self.0
     }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        (Self::MIN..=Self::MAX).map(Self)
+    }
 }
 
 impl TryFrom<u8> for PinSlot {
@@ -208,6 +212,8 @@ mod tests {
         assert_eq!(PinSlot::try_from(PinSlot::MIN).unwrap().get(), PinSlot::MIN);
         assert!(PinSlot::try_from(PinSlot::MAX + 1).is_err());
         assert!(PinSlot::try_from(0).is_err());
+        let all: Vec<u8> = PinSlot::all().map(PinSlot::get).collect();
+        assert_eq!(all, (PinSlot::MIN..=PinSlot::MAX).collect::<Vec<_>>());
     }
 
     #[test]

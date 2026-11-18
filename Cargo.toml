@@ -12,11 +12,14 @@ publish = false
 [workspace.dependencies]
 pin-core = { path = "crates/pin-core" }
 pin-clipboard = { path = "crates/pin-clipboard" }
+anyhow = "1.0"
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 blake3 = "1.8"
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+directories = "6"
 eframe = "0.37"
 getrandom = "0.4"
+global-hotkey = "0.10"
 keyring-core = "1"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSBitmapImageRep", "NSImageRep", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSWorkspace"] }
@@ -29,6 +32,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 proptest = "1.9"
 tempfile = "3.27"
 thiserror = "2.0"
+winit = { version = "0.30", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
 zeroize = "1.9"

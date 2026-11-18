@@ -27,7 +27,7 @@ use crate::model::{Entry, EntryId, Pin, PinSlot};
 use crate::schema;
 use crate::vault::{Session, Vault, VaultOptions};
 
-const DEFAULT_HISTORY_LIMIT: NonZeroUsize = match NonZeroUsize::new(1000) {
+const DEFAULT_HISTORY_LIMIT: NonZeroUsize = match NonZeroUsize::new(200) {
     Some(limit) => limit,
     None => panic!("default history limit must be non-zero"),
 };
