@@ -22,10 +22,10 @@ zeroize.workspace = true
 # macOS builds SQLCipher against CommonCrypto; other targets have no system crypto SQLCipher can rely on, so OpenSSL is vendored.
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store.workspace = true
-rusqlite = { workspace = true, features = ["bundled-sqlcipher", "functions"] }
+rusqlite = { workspace = true, features = ["blob", "bundled-sqlcipher", "functions"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-rusqlite = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl", "functions"] }
+rusqlite = { workspace = true, features = ["blob", "bundled-sqlcipher-vendored-openssl", "functions"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store.workspace = true

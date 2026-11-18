@@ -3,17 +3,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{Store, entry_from_row, expect_row, next_seq, prune, to_i64, write_tx};
 use crate::content;
 use crate::error::{Error, Result};
+use crate::filter::Filter;
 use crate::model::{Entry, EntryId, Format, NewEntry, Timestamp};
 
 const GET_SQL: &str = concat!(
     "SELECT ",
     entry_columns!(),
     " FROM entries e WHERE e.id = ?1"
-);
-const RECENT_SQL: &str = concat!(
-    "SELECT ",
-    entry_columns!(),
-    " FROM entries e ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?1 OFFSET ?2"
 );
 
 impl Store {
@@ -82,7 +78,24 @@ impl Store {
     }
 
     pub fn recent(&self, limit: usize, offset: usize) -> Result<Vec<Entry>> {
-        let mut stmt = self.conn.prepare_cached(RECENT_SQL)?;
+        self.recent_in(Filter::All, limit, offset)
+    }
+
+    pub(super) fn recent_in(
+        &self,
+        filter: Filter,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<Entry>> {
+        let sql = format!(
+            concat!(
+                "SELECT ",
+                entry_columns!(),
+                " FROM entries e WHERE {} ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?1 OFFSET ?2"
+            ),
+            filter.sql()
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let entries = stmt
             .query_map([to_i64(limit), to_i64(offset)], entry_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::{MemoryKeys, key, options, raw};
-use pin_core::{Error, Format, FormatKind, Key, KeyStore, NewEntry, Options, Pin, PinSlot, Store};
+use pin_core::{
+    Error, Filter, Format, FormatKind, Key, KeyStore, NewEntry, Options, Pin, PinSlot, Store,
+};
 
 fn open(dir: &Path, history_limit: usize) -> Store {
     Store::open(
@@ -151,12 +153,15 @@ fn long_query_matches_substrings_case_insensitively() {
     store.insert(text("Hello World")).unwrap();
     store.insert(text("another entry")).unwrap();
 
-    assert_eq!(previews(&store.search("wor", 10).unwrap()), ["Hello World"]);
     assert_eq!(
-        previews(&store.search("O WOR", 10).unwrap()),
+        previews(&store.search("wor", Filter::All, 10).unwrap()),
         ["Hello World"]
     );
-    assert!(store.search("missing", 10).unwrap().is_empty());
+    assert_eq!(
+        previews(&store.search("O WOR", Filter::All, 10).unwrap()),
+        ["Hello World"]
+    );
+    assert!(store.search("missing", Filter::All, 10).unwrap().is_empty());
 }
 
 #[test]
@@ -167,9 +172,18 @@ fn short_query_scans_previews_literally() {
     store.insert(text("100% done")).unwrap();
     store.insert(text("a_b")).unwrap();
 
-    assert_eq!(previews(&store.search("lo", 10).unwrap()), ["Hello World"]);
-    assert_eq!(previews(&store.search("0%", 10).unwrap()), ["100% done"]);
-    assert_eq!(previews(&store.search("_", 10).unwrap()), ["a_b"]);
+    assert_eq!(
+        previews(&store.search("lo", Filter::All, 10).unwrap()),
+        ["Hello World"]
+    );
+    assert_eq!(
+        previews(&store.search("0%", Filter::All, 10).unwrap()),
+        ["100% done"]
+    );
+    assert_eq!(
+        previews(&store.search("_", Filter::All, 10).unwrap()),
+        ["a_b"]
+    );
 }
 
 #[test]
@@ -180,7 +194,7 @@ fn quotes_in_query_are_escaped() {
     store.insert(text("plain text")).unwrap();
 
     assert_eq!(
-        previews(&store.search("\"quoted\"", 10).unwrap()),
+        previews(&store.search("\"quoted\"", Filter::All, 10).unwrap()),
         ["say \"quoted\" text"]
     );
 }
@@ -192,8 +206,11 @@ fn blank_query_lists_recent_entries() {
     for s in ["a", "b", "c"] {
         store.insert(text(s)).unwrap();
     }
-    assert_eq!(previews(&store.search("  ", 10).unwrap()), ["c", "b", "a"]);
-    assert_eq!(store.search("", 2).unwrap().len(), 2);
+    assert_eq!(
+        previews(&store.search("  ", Filter::All, 10).unwrap()),
+        ["c", "b", "a"]
+    );
+    assert_eq!(store.search("", Filter::All, 2).unwrap().len(), 2);
 }
 
 #[test]
@@ -208,12 +225,15 @@ fn deleted_and_cleared_entries_leave_search() {
     store.delete(a).unwrap();
     assert!(matches!(store.delete(a), Err(Error::NotFound(_))));
     assert_eq!(
-        previews(&store.search("alp", 10).unwrap()),
+        previews(&store.search("alp", Filter::All, 10).unwrap()),
         ["alpine", "alps"]
     );
 
     assert_eq!(store.clear_history().unwrap(), 1);
-    assert_eq!(previews(&store.search("alp", 10).unwrap()), ["alpine"]);
+    assert_eq!(
+        previews(&store.search("alp", Filter::All, 10).unwrap()),
+        ["alpine"]
+    );
 }
 
 #[test]
@@ -241,7 +261,7 @@ fn image_and_file_list_entries_get_kind_and_preview() {
     assert_eq!(store.get(files).unwrap().kind, FormatKind::Files);
     assert_eq!(store.get(files).unwrap().preview, "report.pdf");
     assert_eq!(
-        previews(&store.search("report", 10).unwrap()),
+        previews(&store.search("report", Filter::All, 10).unwrap()),
         ["report.pdf"]
     );
 }
@@ -332,8 +352,14 @@ fn short_queries_fold_unicode_case() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(dir.path(), 100);
     store.insert(text("Привет мир")).unwrap();
-    assert_eq!(previews(&store.search("пр", 10).unwrap()), ["Привет мир"]);
-    assert_eq!(previews(&store.search("ПРИ", 10).unwrap()), ["Привет мир"]);
+    assert_eq!(
+        previews(&store.search("пр", Filter::All, 10).unwrap()),
+        ["Привет мир"]
+    );
+    assert_eq!(
+        previews(&store.search("ПРИ", Filter::All, 10).unwrap()),
+        ["Привет мир"]
+    );
 }
 
 #[test]
@@ -478,4 +504,109 @@ fn text_entries_have_no_thumbnail() {
         })
         .unwrap();
     assert!(store.thumbnail(id).unwrap().is_none());
+}
+
+#[test]
+fn filters_in_sql_agree_with_filter_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    let png = || Format::new(FormatKind::Png, [0x89u8, b'P', b'N', b'G']);
+    let entries = [
+        vec![Format::new(FormatKind::Text, "plain words")],
+        vec![Format::new(FormatKind::Text, "https://example.com/a")],
+        vec![Format::new(FormatKind::Text, "HTTP://EXAMPLE.COM")],
+        vec![Format::new(FormatKind::Text, "see https://example.com")],
+        vec![Format::new(FormatKind::Html, "<b>rich</b>")],
+        vec![Format::new(FormatKind::Rtf, "{\\rtf1 rich}")],
+        vec![png()],
+        vec![Format::new(FormatKind::Files, "file:///tmp/a.txt\n")],
+    ];
+    let mut ids = Vec::new();
+    for formats in entries {
+        ids.push(
+            store
+                .insert(NewEntry {
+                    formats,
+                    source_app: None,
+                })
+                .unwrap(),
+        );
+    }
+    store.set_pinned(ids[0], true).unwrap();
+    store
+        .set_slot(ids[6], Some(PinSlot::new(2).unwrap()))
+        .unwrap();
+    let all = store.recent(100, 0).unwrap();
+    for filter in Filter::ALL {
+        let mut expected: Vec<_> = all
+            .iter()
+            .filter(|e| filter.matches(e))
+            .map(|e| e.id)
+            .collect();
+        let mut listed: Vec<_> = store
+            .search("", filter, 100)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        expected.sort();
+        listed.sort();
+        assert_eq!(listed, expected, "{filter:?}");
+    }
+    assert_eq!(store.search("", Filter::Links, 100).unwrap().len(), 2);
+    assert_eq!(store.search("", Filter::Pinned, 100).unwrap().len(), 2);
+    assert_eq!(
+        previews(&store.search("exam", Filter::Links, 100).unwrap()),
+        ["HTTP://EXAMPLE.COM", "https://example.com/a"]
+    );
+    assert_eq!(store.search("http", Filter::Text, 100).unwrap().len(), 3);
+    assert!(
+        store
+            .search("http", Filter::Images, 100)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn details_load_text_and_paths_but_not_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    let long = "я".repeat(20_000);
+    let text = store
+        .insert(NewEntry {
+            formats: vec![
+                Format::new(FormatKind::Text, long.as_str()),
+                Format::new(FormatKind::Html, "<p>x</p>"),
+            ],
+            source_app: None,
+        })
+        .unwrap();
+    let files = store
+        .insert(NewEntry {
+            formats: vec![
+                Format::new(
+                    FormatKind::Files,
+                    "file:///tmp/my%20a.txt\r\nfile:///tmp/dir/\r\n",
+                ),
+                Format::new(FormatKind::Png, [0x89u8, b'P', b'N', b'G']),
+            ],
+            source_app: None,
+        })
+        .unwrap();
+
+    let details = store.details(text).unwrap();
+    assert_eq!(details.formats, [FormatKind::Html, FormatKind::Text]);
+    let shown = details.text.unwrap();
+    assert!(shown.len() <= 16 * 1024 && shown.len() > 16 * 1024 - 2);
+    assert!(shown.chars().all(|c| c == 'я'));
+    assert!(details.files.is_empty());
+
+    let details = store.details(files).unwrap();
+    assert_eq!(details.formats, [FormatKind::Png, FormatKind::Files]);
+    assert_eq!(details.files, ["/tmp/my a.txt", "/tmp/dir/"]);
+    assert!(details.text.is_none());
+
+    store.delete(files).unwrap();
+    assert!(matches!(store.details(files), Err(Error::NotFound(_))));
 }

@@ -5,13 +5,16 @@ macro_rules! entry_columns {
     };
 }
 
+mod details;
 mod entries;
 mod pins;
 mod search;
 mod sql;
 mod thumbnails;
 
+pub use details::Details;
 pub(crate) use entries::{delete_entry, load_formats};
+pub use search::match_ranges;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -97,6 +100,8 @@ impl Store {
              PRAGMA temp_store = MEMORY;
              PRAGMA secure_delete = ON;",
         )?;
+        // Every filter gives list and search their own SQL; keep them all cached next to the rest.
+        conn.set_prepared_statement_cache_capacity(64);
         search::register_functions(&conn)?;
         schema::migrate(&mut conn)?;
         Ok(Self {

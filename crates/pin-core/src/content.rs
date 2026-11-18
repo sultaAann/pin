@@ -5,7 +5,7 @@ use zeroize::Zeroize;
 use crate::model::{Format, FormatKind};
 
 const PREVIEW_CHARS: usize = 200;
-const MAX_INDEXED_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_INDEXED_BYTES: usize = 64 * 1024;
 
 pub(crate) fn normalize(mut formats: Vec<Format>) -> Vec<Format> {
     formats.sort_by(|a, b| a.kind.cmp(&b.kind));
@@ -59,15 +59,27 @@ pub(crate) fn search_text(formats: &[Format]) -> Option<Cow<'_, str>> {
 }
 
 fn files_text(data: &[u8]) -> String {
+    file_paths(data).join("\n")
+}
+
+/// Decoded paths of a `text/uri-list`, reading at most the first 64 KiB; a path cut by that
+/// limit is dropped rather than shown as a different file.
+pub(crate) fn file_paths(data: &[u8]) -> Vec<String> {
+    let cut = data.len() > MAX_INDEXED_BYTES;
     let list = String::from_utf8_lossy(truncate_bytes(data, MAX_INDEXED_BYTES));
-    let mut out = Vec::new();
-    for (index, uri) in file_uris(&list).enumerate() {
-        if index > 0 {
-            out.push(b'\n');
-        }
-        percent_decode_into(&mut out, uri.strip_prefix("file://").unwrap_or(uri));
-    }
-    into_string_lossy(out)
+    let list = match list.rfind('\n') {
+        Some(end) if cut => &list[..end],
+        _ if cut => "",
+        _ => &list,
+    };
+    file_uris(list)
+        .map(|uri| percent_decode(uri.strip_prefix("file://").unwrap_or(uri)))
+        .collect()
+}
+
+/// Text cut to at most `max` bytes on a char boundary.
+pub(crate) fn display_text(data: &[u8], max: usize) -> String {
+    String::from_utf8_lossy(truncate_bytes(data, max)).into_owned()
 }
 
 fn into_string_lossy(bytes: Vec<u8>) -> String {
@@ -232,6 +244,17 @@ mod tests {
         );
         assert_eq!(files_preview(&formats[0].data), "my reportы.pdf");
         assert_eq!(percent_decode("100%"), "100%");
+    }
+
+    #[test]
+    fn file_list_cut_by_limit_drops_partial_path() {
+        let line = "file:///tmp/a.txt\n";
+        let full = line.repeat(MAX_INDEXED_BYTES / line.len());
+        let long = format!("{full}file:///tmp/partial-name-that-goes-past-the-limit.txt\n");
+        let paths = file_paths(long.as_bytes());
+        assert_eq!(paths.len(), MAX_INDEXED_BYTES / line.len());
+        assert!(paths.iter().all(|p| p == "/tmp/a.txt"));
+        assert_eq!(file_paths(b"file:///tmp/b.txt"), ["/tmp/b.txt"]);
     }
 
     #[test]

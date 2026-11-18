@@ -332,7 +332,12 @@ fn moved_entry_leaves_history_and_search() {
         .move_from_history(entry, label("pw", "note"))
         .unwrap();
     assert!(matches!(store.get(entry), Err(Error::NotFound(_))));
-    assert!(store.search("password", 10).unwrap().is_empty());
+    assert!(
+        store
+            .search("password", pin_core::Filter::All, 10)
+            .unwrap()
+            .is_empty()
+    );
     assert!(store.recent(10, 0).unwrap().is_empty());
     assert_eq!(store.vault().formats(id).unwrap()[0].data, b"password123");
     assert!(matches!(

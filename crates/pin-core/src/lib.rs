@@ -3,6 +3,7 @@
 
 mod content;
 mod error;
+mod filter;
 mod key;
 mod keychain;
 mod model;
@@ -14,11 +15,12 @@ mod thumbnail;
 mod vault;
 
 pub use error::{Error, KeychainFailure, Result};
+pub use filter::Filter;
 pub use key::Key;
 pub use keychain::{KeyStore, Keychain};
 pub use model::{Entry, EntryId, Format, FormatKind, NewEntry, Pin, PinSlot, Timestamp};
 pub use paths::default_database_path;
-pub use store::{Options, Store};
+pub use store::{Details, Options, Store, match_ranges};
 pub use thumbnail::Thumbnail;
 pub use vault::{
     KdfParams, MasterPassword, NewSecret, RecoveryKey, Secret, SecretId, SecretLabel, Vault,

@@ -40,7 +40,11 @@ fn search(c: &mut Criterion) {
     let mut group = c.benchmark_group("search");
     for query in ["e", "ps", "lore"] {
         group.bench_function(format!("{}_chars", query.chars().count()), |b| {
-            b.iter(|| store.search(black_box(query), 50).unwrap());
+            b.iter(|| {
+                store
+                    .search(black_box(query), pin_core::Filter::All, 50)
+                    .unwrap()
+            });
         });
     }
     group.finish();

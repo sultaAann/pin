@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::ops::Range;
 
 use rusqlite::functions::FunctionFlags;
 use rusqlite::types::FromSqlError;
@@ -6,6 +7,7 @@ use rusqlite::{Connection, params};
 
 use super::{Store, entry_from_row, to_i64};
 use crate::error::Result;
+use crate::filter::Filter;
 use crate::model::Entry;
 
 macro_rules! contains_folded {
@@ -16,37 +18,44 @@ macro_rules! contains_folded {
 
 const MIN_TRIGRAM_CHARS: usize = 3;
 
-const FTS_SQL: &str = concat!(
-    "SELECT ",
-    entry_columns!(),
-    " FROM entries_fts f JOIN entries e ON e.id = f.rowid WHERE f.text MATCH ?1
-      ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?2"
-);
-const SHORT_SQL: &str = concat!(
-    "SELECT ",
-    entry_columns!(),
-    " FROM entries e WHERE ",
-    contains_folded!(),
-    "(e.preview, ?1) ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?2"
-);
-
 impl Store {
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Entry>> {
+    pub fn search(&self, query: &str, filter: Filter, limit: usize) -> Result<Vec<Entry>> {
         let query = query.trim();
         if query.is_empty() {
-            return self.recent(limit, 0);
+            return self.recent_in(filter, limit, 0);
         }
         // Trigram MATCH needs at least 3 characters. Shorter queries scan only previews: scanning
         // all indexed text per keystroke is too slow, and SQLite LIKE folds case for ASCII only.
         let (sql, pattern) = if query.chars().count() >= MIN_TRIGRAM_CHARS {
             (
-                FTS_SQL,
+                format!(
+                    concat!(
+                        "SELECT ",
+                        entry_columns!(),
+                        " FROM entries_fts f JOIN entries e ON e.id = f.rowid
+                          WHERE f.text MATCH ?1 AND {}
+                          ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?2"
+                    ),
+                    filter.sql()
+                ),
                 Cow::Owned(format!("\"{}\"", query.replace('"', "\"\""))),
             )
         } else {
-            (SHORT_SQL, Cow::Borrowed(query))
+            (
+                format!(
+                    concat!(
+                        "SELECT ",
+                        entry_columns!(),
+                        " FROM entries e WHERE ",
+                        contains_folded!(),
+                        "(e.preview, ?1) AND {} ORDER BY e.pinned DESC, e.use_seq DESC LIMIT ?2"
+                    ),
+                    filter.sql()
+                ),
+                Cow::Borrowed(query),
+            )
         };
-        let mut stmt = self.conn.prepare_cached(sql)?;
+        let mut stmt = self.conn.prepare_cached(&sql)?;
         let entries = stmt
             .query_map(params![pattern, to_i64(limit)], entry_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -89,6 +98,44 @@ fn contains_folded(haystack: &str, needle: &FoldedNeedle) -> bool {
     })
 }
 
+/// Byte ranges of `haystack` that match `query` with the same case folding as search, for
+/// highlighting results. Ranges do not overlap and always end on a char boundary.
+pub fn match_ranges(haystack: &str, query: &str) -> Vec<Range<usize>> {
+    let needle = FoldedNeedle::new(query.trim());
+    let mut ranges = Vec::new();
+    if needle.text.is_empty() {
+        return ranges;
+    }
+    let mut from = 0;
+    for (start, _) in haystack.char_indices() {
+        if start < from {
+            continue;
+        }
+        if let Some(len) = match_len(&haystack[start..], &needle.text) {
+            ranges.push(start..start + len);
+            from = start + len;
+        }
+    }
+    ranges
+}
+
+fn match_len(haystack: &str, needle: &str) -> Option<usize> {
+    let mut wanted = needle.chars().peekable();
+    for (offset, c) in haystack.char_indices() {
+        for folded in fold(c) {
+            match wanted.next() {
+                Some(w) if w == folded => {}
+                Some(_) => return None,
+                None => break,
+            }
+        }
+        if wanted.peek().is_none() {
+            return Some(offset + c.len_utf8());
+        }
+    }
+    None
+}
+
 pub(super) fn register_functions(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function(
         contains_folded!(),
@@ -124,5 +171,15 @@ mod tests {
         assert!(found("ΟΔΟΣ", "ος"));
         assert!(found("οδος", "ΟΣ"));
         assert!(found("İstanbul", "i"));
+    }
+
+    #[test]
+    fn match_ranges_cover_every_folded_occurrence() {
+        assert_eq!(match_ranges("Hello hello", " LL "), [2..4, 8..10]);
+        assert_eq!(match_ranges("Привет мир", "при"), vec![0..6]);
+        assert_eq!(match_ranges("İstanbul", "i"), vec![0..2]);
+        assert_eq!(match_ranges("aaaa", "aa"), [0..2, 2..4]);
+        assert!(match_ranges("abc", "").is_empty());
+        assert!(match_ranges("abc", "abcd").is_empty());
     }
 }
