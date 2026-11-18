@@ -16,7 +16,7 @@ const OPEN: Modifiers = Modifiers::META.union(Modifiers::SHIFT);
 #[cfg(target_os = "macos")]
 const SLOT: Modifiers = Modifiers::META.union(Modifiers::CONTROL);
 #[cfg(target_os = "macos")]
-pub const SLOT_LABEL: &str = "Cmd+Ctrl+";
+pub const SLOT_LABEL: &str = "\u{2303}\u{2318}";
 
 #[cfg(not(target_os = "macos"))]
 const OPEN: Modifiers = Modifiers::CONTROL.union(Modifiers::SHIFT);

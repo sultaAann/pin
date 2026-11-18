@@ -15,9 +15,13 @@ fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Pin")
-            .with_inner_size([420.0, 560.0])
+            .with_inner_size(view::WINDOW_SIZE)
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_has_shadow(true)
             .with_resizable(false)
             .with_always_on_top(),
+        centered: true,
         event_loop_builder: platform::event_loop_builder(),
         ..Default::default()
     };

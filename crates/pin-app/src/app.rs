@@ -58,6 +58,8 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, store: Store) -> Self {
+        crate::view::install(&cc.egui_ctx);
+        place_window(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
         let events = Events::new(tx, cc.egui_ctx.clone());
         let watch = {
@@ -204,6 +206,7 @@ impl App {
         self.selected = 0;
         self.scroll_to_selected = true;
         self.refresh();
+        place_window(ctx);
         platform::reveal();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -231,6 +234,12 @@ impl App {
     }
 }
 
+fn place_window(ctx: &egui::Context) {
+    if let Some(origin) = platform::popup_origin(crate::view::WINDOW_SIZE) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin));
+    }
+}
+
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(event) = self.events.try_recv() {
@@ -240,5 +249,9 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show_ui(ui);
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        crate::view::transparent()
     }
 }
