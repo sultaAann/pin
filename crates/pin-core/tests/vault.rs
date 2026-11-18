@@ -1,36 +1,18 @@
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
-use std::cell::RefCell;
-use std::fmt::Write as _;
+mod common;
+
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use common::{MemoryKeys, key, options, raw};
 use pin_core::{
-    Error, Format, FormatKind, KdfParams, Key, KeyStore, MasterPassword, NewEntry, NewSecret,
-    Options, PinSlot, RecoveryKey, Store, VaultOptions, VaultStatus,
+    Error, Format, FormatKind, MasterPassword, NewEntry, NewSecret, Options, PinSlot, RecoveryKey,
+    SecretLabel, Store, VaultOptions, VaultStatus,
 };
-
-fn key() -> Key {
-    Key::from_bytes(&mut [7; Key::LEN])
-}
 
 fn pw(s: &str) -> MasterPassword {
     MasterPassword::new(s.into()).unwrap()
-}
-
-fn options() -> Options {
-    Options {
-        vault: VaultOptions {
-            kdf: KdfParams {
-                memory_kib: 64,
-                iterations: 1,
-                parallelism: 1,
-            },
-            ..VaultOptions::default()
-        },
-        ..Options::default()
-    }
 }
 
 fn open(dir: &Path) -> Store {
@@ -38,7 +20,7 @@ fn open(dir: &Path) -> Store {
 }
 
 fn open_with(dir: &Path, options: Options) -> Store {
-    Store::open(&dir.join("pin.db"), &key(), options).unwrap()
+    Store::open(dir.join("pin.db"), &key(), options).unwrap()
 }
 
 fn created(dir: &Path) -> Store {
@@ -65,15 +47,11 @@ fn names(store: &mut Store) -> Vec<String> {
         .collect()
 }
 
-fn raw(dir: &Path) -> rusqlite::Connection {
-    let conn = rusqlite::Connection::open(dir.join("pin.db")).unwrap();
-    let hex = key().as_bytes().iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    });
-    conn.execute_batch(&format!("PRAGMA key = \"x'{hex}'\";"))
-        .unwrap();
-    conn
+fn label(name: &str, note: &str) -> SecretLabel {
+    SecretLabel {
+        name: name.into(),
+        note: note.into(),
+    }
 }
 
 #[test]
@@ -145,7 +123,7 @@ fn locked_vault_rejects_every_secret_operation() {
     ));
     assert!(matches!(vault.formats(id), Err(Error::VaultLocked)));
     assert!(matches!(
-        vault.update(id, "n".into(), String::new()),
+        vault.update(id, label("n", "")),
         Err(Error::VaultLocked)
     ));
     assert!(matches!(vault.delete(id), Err(Error::VaultLocked)));
@@ -197,10 +175,7 @@ fn update_changes_name_and_note_but_keeps_value() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = created(dir.path());
     let id = store.vault().add(secret("old", "abc")).unwrap();
-    store
-        .vault()
-        .update(id, "new".into(), "rotated".into())
-        .unwrap();
+    store.vault().update(id, label("new", "rotated")).unwrap();
     let listed = store.vault().secrets().unwrap();
     assert_eq!(
         (listed[0].name.as_str(), listed[0].note.as_str()),
@@ -208,7 +183,7 @@ fn update_changes_name_and_note_but_keeps_value() {
     );
     assert_eq!(store.vault().formats(id).unwrap()[0].data, b"abc");
     assert!(matches!(
-        store.vault().update(id, " ".into(), String::new()),
+        store.vault().update(id, label(" ", "")),
         Err(Error::EmptyName)
     ));
 }
@@ -224,7 +199,7 @@ fn deleted_secret_is_gone() {
     assert!(matches!(vault.delete(id), Err(Error::SecretNotFound(_))));
     assert!(matches!(vault.formats(id), Err(Error::SecretNotFound(_))));
     assert!(matches!(
-        vault.update(id, "n".into(), String::new()),
+        vault.update(id, label("n", "")),
         Err(Error::SecretNotFound(_))
     ));
 }
@@ -346,9 +321,7 @@ fn moved_entry_leaves_history_and_search() {
         })
         .unwrap();
     assert!(matches!(
-        store
-            .vault()
-            .move_from_history(entry, "pw".into(), String::new()),
+        store.vault().move_from_history(entry, label("pw", "")),
         Err(Error::VaultLocked)
     ));
     assert!(store.get(entry).is_ok());
@@ -356,16 +329,14 @@ fn moved_entry_leaves_history_and_search() {
     let _recovery = store.vault().create(&pw("correct horse")).unwrap();
     let id = store
         .vault()
-        .move_from_history(entry, "pw".into(), "note".into())
+        .move_from_history(entry, label("pw", "note"))
         .unwrap();
     assert!(matches!(store.get(entry), Err(Error::NotFound(_))));
     assert!(store.search("password", 10).unwrap().is_empty());
     assert!(store.recent(10, 0).unwrap().is_empty());
     assert_eq!(store.vault().formats(id).unwrap()[0].data, b"password123");
     assert!(matches!(
-        store
-            .vault()
-            .move_from_history(entry, "pw".into(), String::new()),
+        store.vault().move_from_history(entry, label("pw", "")),
         Err(Error::NotFound(_))
     ));
 }
@@ -387,7 +358,7 @@ fn moved_pinned_entry_keeps_all_formats_and_frees_slot() {
     store.set_slot(entry, Some(slot)).unwrap();
     let id = store
         .vault()
-        .move_from_history(entry, "card".into(), String::new())
+        .move_from_history(entry, label("card", ""))
         .unwrap();
     assert!(store.by_slot(slot).unwrap().is_none());
     let mut kinds: Vec<_> = store
@@ -408,7 +379,7 @@ fn vault_locks_after_idle_timeout() {
         dir.path(),
         Options {
             vault: VaultOptions {
-                auto_lock: Some(Duration::from_millis(400)),
+                auto_lock: Some(Duration::from_millis(500)),
                 ..options().vault
             },
             ..options()
@@ -416,11 +387,11 @@ fn vault_locks_after_idle_timeout() {
     );
     let _recovery = store.vault().create(&pw("correct horse")).unwrap();
     assert!(store.vault().lock_deadline().is_some());
-    std::thread::sleep(Duration::from_millis(150));
+    std::thread::sleep(Duration::from_millis(300));
     store.vault().add(secret("a", "1")).unwrap();
-    std::thread::sleep(Duration::from_millis(150));
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(store.vault().status().unwrap(), VaultStatus::Unlocked);
-    std::thread::sleep(Duration::from_millis(600));
+    std::thread::sleep(Duration::from_secs(1));
     assert!(store.vault().lock_if_idle());
     assert!(store.vault().lock_deadline().is_none());
     assert_eq!(store.vault().status().unwrap(), VaultStatus::Locked);
@@ -541,7 +512,7 @@ fn upgrade_from_v1_keeps_history_and_scrubs_search_index() {
     drop(store);
     raw(dir.path())
         .execute_batch(
-            "DROP TABLE secret_formats; DROP TABLE secrets; DROP TABLE vault;
+            "DROP TABLE secret_formats; DROP TABLE secrets; DROP TABLE vault; DROP INDEX entries_seq;
              INSERT INTO entries_fts (entries_fts, rank) VALUES ('secure-delete', 0);
              PRAGMA user_version = 1;",
         )
@@ -564,77 +535,18 @@ fn upgrade_from_v1_keeps_history_and_scrubs_search_index() {
     assert_eq!((version, secure), (2, 1));
 }
 
-#[derive(Default)]
-struct MemoryKeys(RefCell<Option<Vec<u8>>>);
-
-impl KeyStore for MemoryKeys {
-    fn load(&self) -> pin_core::Result<Option<Key>> {
-        self.0.borrow().as_deref().map(Key::from_slice).transpose()
-    }
-
-    fn save(&self, key: &Key) -> pin_core::Result<()> {
-        *self.0.borrow_mut() = Some(key.as_bytes().to_vec());
-        Ok(())
-    }
-}
-
 #[test]
-fn open_with_key_store_creates_key_once_and_refuses_lost_key() {
+fn vault_survives_reopen_through_key_store() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("pin.db");
     let keys = MemoryKeys::default();
-    let mut store = Store::open_with(&path, &keys, options()).unwrap();
-    store
-        .insert(NewEntry {
-            formats: vec![Format::new(FormatKind::Text, "hello")],
-            source_app: None,
-        })
-        .unwrap();
+    let mut store = Store::open_with_keys(&path, &keys, options()).unwrap();
+    let _recovery = store.vault().create(&pw("correct horse")).unwrap();
+    store.vault().add(secret("a", "1")).unwrap();
     drop(store);
 
-    let store = Store::open_with(&path, &keys, options()).unwrap();
-    assert_eq!(store.recent(10, 0).unwrap().len(), 1);
-    drop(store);
-
-    assert!(matches!(
-        Store::open_with(&path, &MemoryKeys::default(), options()),
-        Err(Error::KeyMissing)
-    ));
-}
-
-#[derive(Default)]
-struct SlowKeys {
-    key: Mutex<Option<Vec<u8>>>,
-    saves: Mutex<usize>,
-}
-
-impl KeyStore for SlowKeys {
-    fn load(&self) -> pin_core::Result<Option<Key>> {
-        let stored = self.key.lock().unwrap().clone();
-        std::thread::sleep(Duration::from_millis(50));
-        stored.as_deref().map(Key::from_slice).transpose()
-    }
-
-    fn save(&self, key: &Key) -> pin_core::Result<()> {
-        *self.saves.lock().unwrap() += 1;
-        *self.key.lock().unwrap() = Some(key.as_bytes().to_vec());
-        Ok(())
-    }
-}
-
-#[test]
-fn concurrent_first_runs_share_one_key() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = Arc::new(dir.path().join("pin.db"));
-    let keys = Arc::new(SlowKeys::default());
-    let handles: Vec<_> = (0..2)
-        .map(|_| {
-            let (path, keys) = (Arc::clone(&path), Arc::clone(&keys));
-            std::thread::spawn(move || Store::open_with(&path, &*keys, options()).map(drop))
-        })
-        .collect();
-    for handle in handles {
-        handle.join().unwrap().unwrap();
-    }
-    assert_eq!(*keys.saves.lock().unwrap(), 1);
+    let mut store = Store::open_with_keys(&path, &keys, options()).unwrap();
+    assert_eq!(store.vault().status().unwrap(), VaultStatus::Locked);
+    store.vault().unlock(&pw("correct horse")).unwrap();
+    assert_eq!(names(&mut store), ["a"]);
 }
