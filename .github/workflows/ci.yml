@@ -8,8 +8,17 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR makes its running check pointless; runs on main finish to save the cache.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
+  # Debug info isn't needed to check and test; without it builds, links and the cache are
+  # much smaller.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   check:
@@ -25,6 +34,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Caches saved from PRs are only visible to that PR and push main's out of the
+          # 10 GB limit; PRs start from main's instead.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
