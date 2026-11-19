@@ -131,6 +131,10 @@ impl App {
             .inspect_err(|err| tracing::warn!(%err, "clipboard history disabled"))
             .ok();
         let thumbs = thumbs::Thumbnails::spawn(events.clone(), path, key);
+        {
+            let events = events.clone();
+            platform::watch_activation(move || events.send(Event::Activated));
+        }
         let hotkeys = Hotkeys::register(events)
             .inspect_err(|err| tracing::warn!(%err, "global hotkeys disabled"))
             .ok();
@@ -319,6 +323,8 @@ impl App {
                 }
             }
             Event::Thumbnail(id, thumb) => self.thumbnail_ready(ctx, id, thumb),
+            Event::Activated if self.window == Window::Hidden => self.show(ctx),
+            Event::Activated => {}
             Event::Hotkey(Action::Toggle) => match self.window {
                 Window::Hidden => self.show(ctx),
                 Window::Shown { had_focus: false } => {
