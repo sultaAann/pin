@@ -1,6 +1,9 @@
 //! Writes test entries to the general pasteboard with pin's writer, checks what other apps
 //! would paste, then restores the original clipboard.
-#![expect(clippy::print_stdout, clippy::unwrap_used, reason = "diagnostic tool")]
+#![cfg_attr(
+    target_os = "macos",
+    expect(clippy::print_stdout, clippy::unwrap_used, reason = "diagnostic tool")
+)]
 
 #[cfg(target_os = "macos")]
 fn main() {

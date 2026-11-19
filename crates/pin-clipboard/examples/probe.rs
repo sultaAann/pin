@@ -1,5 +1,8 @@
 //! Prints the type identifiers and sizes on the general pasteboard, never its contents.
-#![expect(clippy::print_stdout, reason = "diagnostic tool")]
+#![cfg_attr(
+    target_os = "macos",
+    expect(clippy::print_stdout, reason = "diagnostic tool")
+)]
 
 #[cfg(target_os = "macos")]
 fn main() {
