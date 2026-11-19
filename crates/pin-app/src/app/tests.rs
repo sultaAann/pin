@@ -135,3 +135,45 @@ fn show_button_reveals_until_clicked_again() {
     click(&mut app, button);
     assert!(app.revealed.is_none());
 }
+
+fn backspace() -> Event {
+    Event::Key {
+        key: egui::Key::Backspace,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+#[test]
+fn backspace_leaves_secrets_even_from_a_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.refresh();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    let id = app.secrets[0].id;
+    app.start_delete(id);
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, vec![backspace()]);
+    assert!(!app.secrets_mode());
+    assert!(app.sheet.is_none());
+}
+
+#[test]
+fn unsaved_recovery_key_keeps_secrets_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app(dir.path());
+    app.refresh();
+    app.sheet = Some(Sheet::RecoveryKey {
+        key: zeroize::Zeroizing::new("AAAA-BBBB".to_owned()),
+        then: None,
+        saved: false,
+    });
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, vec![backspace()]);
+    assert!(app.secrets_mode());
+    assert!(app.sheet.is_some());
+}

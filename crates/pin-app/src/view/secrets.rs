@@ -286,7 +286,7 @@ enum Dot {
 }
 
 /// `m:ss`, rounded up so the countdown reaches 0:00 only when the time is up.
-fn clock(left: Duration) -> String {
+pub(super) fn clock(left: Duration) -> String {
     let secs = left.as_secs() + u64::from(left.subsec_nanos() > 0);
     format!("{}:{:02}", secs / 60, secs % 60)
 }
@@ -453,7 +453,8 @@ fn say(ui: &mut egui::Ui, palette: &Palette, words: &str) {
 }
 
 /// The pill in the search bar that marks secrets mode; returns whether its close button was hit.
-pub(super) fn mode_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
+/// The button is left out while secrets mode can't be left.
+pub(super) fn mode_pill(ui: &mut egui::Ui, palette: &Palette, closable: bool) -> bool {
     let mut closed = false;
     Frame::new()
         .fill(palette.chip)
@@ -473,6 +474,10 @@ pub(super) fn mode_pill(ui: &mut egui::Ui, palette: &Palette) -> bool {
                         .size(13.0)
                         .color(palette.accent_text),
                 );
+                if !closable {
+                    ui.add_space(4.0);
+                    return;
+                }
                 let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::Button, true, "Back to history")

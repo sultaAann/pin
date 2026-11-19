@@ -12,6 +12,8 @@ use super::theme::Palette;
 use crate::app::{App, Command, Focus, LabelTarget, Sheet, SheetAction};
 
 const WIDTH: f32 = 320.0;
+// Wide enough for the recovery key in two rows of seven groups.
+const KEY_WIDTH: f32 = 420.0;
 
 /// Everything a sheet says, apart from its fields.
 pub(super) struct Wording {
@@ -130,17 +132,34 @@ impl App {
             ui.ctx().request_repaint_after(wait);
         }
         let summary = self.sheet_summary();
+        let copied = matches!(self.sheet, Some(Sheet::RecoveryKey { .. }))
+            .then(|| self.clears_in())
+            .flatten()
+            .map(|(left, _)| left);
+        if copied.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(1));
+        }
         let error = self.sheet_error.clone();
         let sheet = self.sheet.as_mut()?;
         let words = wording(sheet);
         let mut command = None;
-        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        let width = if matches!(sheet, Sheet::RecoveryKey { .. }) {
+            KEY_WIDTH
+        } else {
+            WIDTH
+        };
+        // Each sheet keeps its own scroll offset, so a new sheet starts at the top.
+        let scroll = ScrollArea::vertical()
+            .id_salt(sheet.kind())
+            .auto_shrink(false);
+        scroll.show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(22.0);
                 heading(ui, palette, &words);
                 ui.add_space(18.0);
-                ui.allocate_ui_with_layout(vec2(WIDTH, 0.0), Layout::top_down(Align::Min), |ui| {
-                    ui.set_width(WIDTH);
+                ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
+                    ui.set_width(width);
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                     if let Some(summary) = &summary {
                         summary.show(ui, palette);
@@ -152,6 +171,7 @@ impl App {
                         focus,
                         wrong: error.is_some() && matches!(sheet, Sheet::Unlock { .. }),
                         ready: quiet.is_none(),
+                        copied,
                     };
                     if let Some(chosen) = form.fields(ui, sheet) {
                         command = Some(chosen);
@@ -313,6 +333,8 @@ struct Form<'a> {
     ready: bool,
     focus: bool,
     wrong: bool,
+    /// Time until the copied recovery key is cleared from the clipboard.
+    copied: Option<std::time::Duration>,
 }
 
 impl Form<'_> {
@@ -346,7 +368,7 @@ impl Form<'_> {
                 entered |= self.field(ui, "Confirm Password", confirm, Input::Password(false));
             }
             Sheet::RecoveryKey { key, saved, .. } => {
-                return recovery_key(ui, self.palette, key, saved, self.ready);
+                return recovery_key(ui, self.palette, key, saved, self.ready, self.copied);
             }
             Sheet::Label { name, note, .. } => {
                 entered |= self.field(
@@ -441,10 +463,11 @@ fn recovery_key(
     key: &str,
     saved: &mut bool,
     ready: bool,
+    copied: Option<std::time::Duration>,
 ) -> Option<Command> {
     const GROUP: egui::Vec2 = egui::Vec2::new(50.0, 26.0);
     const GAP: f32 = 6.0;
-    const PER_ROW: usize = 5;
+    const PER_ROW: usize = 7;
     let mut command = None;
     Frame::new()
         .fill(palette.well)
@@ -482,8 +505,7 @@ fn recovery_key(
         });
     ui.add_space(12.0);
     // Clicks queued while Argon2 ran must not copy the key or tick the box.
-    let copy = controls::bordered(ui, palette, Some(Icon::Copy), "Copy Key", Some(WIDTH));
-    if copy.clicked() && ready {
+    if copy_key(ui, palette, copied).clicked() && ready {
         command = Some(Command::Sheet(SheetAction::CopyRecoveryKey));
     }
     ui.add_space(6.0);
@@ -507,10 +529,64 @@ fn recovery_key(
     command
 }
 
+/// The Copy Key button; after a copy it turns green and counts down to the clipboard clear.
+fn copy_key(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    copied: Option<std::time::Duration>,
+) -> egui::Response {
+    let size = vec2(ui.available_width(), 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let label = copied.map_or_else(
+        || "Copy Key".to_owned(),
+        |left| format!("Copied \u{00B7} clears in {}", secrets::clock(left)),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
+    let shown = ui
+        .ctx()
+        .animate_bool_with_time(response.id, copied.is_some(), 0.2);
+    let idle = if response.hovered() {
+        palette.hover
+    } else {
+        palette.field
+    };
+    let success = palette.success.gamma_multiply(0.18);
+    let fill = idle.lerp_to_gamma(success, shown);
+    let stroke = palette.border.lerp_to_gamma(palette.success, shown);
+    let ink = palette.text.lerp_to_gamma(palette.success_text, shown);
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        7.0,
+        fill,
+        Stroke::new(1.0, stroke),
+        egui::StrokeKind::Inside,
+    );
+    let text = painter.layout_no_wrap(label, FontId::proportional(13.0), ink);
+    let icon = if copied.is_some() {
+        Icon::Check
+    } else {
+        Icon::Copy
+    };
+    let start = rect.center().x - f32::midpoint(21.0, text.size().x);
+    icons::paint(
+        painter,
+        Rect::from_center_size(pos2(start + 7.0, rect.center().y), vec2(14.0, 14.0)),
+        icon,
+        ink,
+    );
+    painter.galley(
+        pos2(start + 21.0, rect.center().y - text.size().y / 2.0),
+        text,
+        ink,
+    );
+    response
+}
+
 fn buttons(ui: &mut egui::Ui, palette: &Palette, words: &Wording, ready: bool) -> Option<Command> {
     let mut command = None;
     ui.allocate_ui_with_layout(
-        vec2(WIDTH, 32.0),
+        vec2(ui.available_width(), 32.0),
         Layout::left_to_right(Align::Center),
         |ui| {
             if let Some((label, action)) = words.link {

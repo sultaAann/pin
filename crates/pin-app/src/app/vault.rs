@@ -166,6 +166,25 @@ impl App {
         Ok(())
     }
 
+    /// Whether secrets mode can be left now: not while a new recovery key waits to be saved.
+    pub(crate) fn can_leave_secrets(&self) -> bool {
+        !matches!(self.sheet, Some(Sheet::RecoveryKey { saved: false, .. }))
+    }
+
+    /// Leaves secrets mode for history, closing any sheet; returns whether it did.
+    pub(crate) fn leave_to_history(&mut self) -> bool {
+        if !self.can_leave_secrets() {
+            return false;
+        }
+        if matches!(self.sheet, Some(Sheet::RecoveryKey { .. })) {
+            self.sheet_action(SheetAction::Submit);
+        }
+        self.query.clear();
+        self.sheet_error = None;
+        self.leave_secrets();
+        true
+    }
+
     // Unlock and setup prompts that only exist because "/" was typed go away with it.
     pub(super) fn leave_secrets(&mut self) {
         self.hide_value();

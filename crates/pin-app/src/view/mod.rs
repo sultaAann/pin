@@ -59,18 +59,25 @@ impl App {
                 }
                 divider(ui, &palette);
                 let body_height = (ui.available_height() - FOOTER_HEIGHT - 1.0).max(0.0);
-                ui.allocate_ui(vec2(ui.available_width(), body_height), |ui| {
-                    let chosen = if self.sheet.is_some() {
-                        self.sheet_ui(ui, &palette)
-                    } else if self.secrets_mode() {
-                        self.secret_list(ui, &palette)
-                    } else {
-                        self.history(ui, &palette)
-                    };
-                    if chosen.is_some() {
-                        clicked = chosen;
-                    }
-                });
+                // The body always takes exactly this space, so the footer never moves.
+                let (body, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), body_height), Sense::hover());
+                let mut body_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(body)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                body_ui.set_clip_rect(body.intersect(body_ui.clip_rect()));
+                let chosen = if self.sheet.is_some() {
+                    self.sheet_ui(&mut body_ui, &palette)
+                } else if self.secrets_mode() {
+                    self.secret_list(&mut body_ui, &palette)
+                } else {
+                    self.history(&mut body_ui, &palette)
+                };
+                if chosen.is_some() {
+                    clicked = chosen;
+                }
                 divider(ui, &palette);
                 if let Some(chosen) = self.footer(ui, &palette) {
                     clicked = Some(chosen);
@@ -134,7 +141,7 @@ impl App {
                             edited = true;
                         }
                         ui.add_space(4.0);
-                    } else if secrets && self.sheet.is_none() && !edited {
+                    } else if secrets && self.can_leave_secrets() && !edited {
                         secrets::history_hint(ui, palette);
                         ui.add_space(8.0);
                     }
@@ -191,18 +198,15 @@ impl App {
         if !self.secrets_mode() {
             return (self.query.clone(), false);
         }
-        // A sheet about a secret must not outlive secrets mode, so leaving waits for it to close.
-        let open = self.sheet.is_none();
-        let mut back = secrets::mode_pill(ui, palette) && open;
+        let mut back = secrets::mode_pill(ui, palette, self.can_leave_secrets());
         ui.add_space(10.0);
         let text = self.secret_query().to_owned();
-        back |= open
-            && text.is_empty()
-            && ui.memory(|m| m.has_focus(id))
+        // Backspace leaves from the empty search, or from a sheet when no field takes the key.
+        let free = ui.memory(|m| m.has_focus(id)) || !ui.ctx().egui_wants_keyboard_input();
+        back |= text.is_empty()
+            && free
             && ui.input(|i| i.key_pressed(egui::Key::Backspace) && i.modifiers.is_none());
-        if back {
-            self.query.clear();
-        }
+        let back = back && self.leave_to_history();
         (text, back)
     }
 
@@ -517,8 +521,12 @@ fn empty(
     subtitle: &str,
     extra: impl FnOnce(&mut egui::Ui),
 ) {
+    // Centred by the height measured on the previous frame, since it is only known after drawing.
+    let id = egui::Id::unique(("pin-empty", title));
+    let measured: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(128.0);
     ui.vertical_centered(|ui| {
-        ui.add_space((ui.available_height() / 2.0 - 64.0).max(0.0));
+        ui.add_space(((ui.available_height() - measured) / 2.0).max(0.0));
+        let top = ui.cursor().top();
         let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
         ui.painter().rect_filled(rect, 12.0, palette.icon);
         icons::paint(
@@ -532,6 +540,11 @@ fn empty(
         ui.add_space(6.0);
         ui.label(RichText::new(subtitle).size(12.5).color(palette.secondary));
         extra(ui);
+        let height = ui.cursor().top() - top;
+        if (height - measured).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(id, height));
+            ui.ctx().request_discard("centre empty state");
+        }
     });
 }
 
