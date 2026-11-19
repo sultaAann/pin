@@ -1,15 +1,27 @@
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
+mod common;
+
+use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use pin_core::{Error, Format, FormatKind, Key, NewEntry, Options, PinSlot, Store};
-
-fn key() -> Key {
-    Key::from_bytes(&mut [7; Key::LEN])
-}
+use common::{MemoryKeys, key, options, raw};
+use pin_core::{
+    Error, Filter, Format, FormatKind, Key, KeyStore, NewEntry, Options, Pin, PinSlot, Store,
+};
 
 fn open(dir: &Path, history_limit: usize) -> Store {
-    Store::open(&dir.join("pin.db"), &key(), Options { history_limit }).unwrap()
+    Store::open(
+        dir.join("pin.db"),
+        &key(),
+        Options {
+            history_limit: NonZeroUsize::new(history_limit).unwrap(),
+            ..Options::default()
+        },
+    )
+    .unwrap()
 }
 
 fn text(s: &str) -> NewEntry {
@@ -107,7 +119,7 @@ fn pinned_entries_come_first() {
     store.set_pinned(old, true).unwrap();
     let entries = store.recent(10, 0).unwrap();
     assert_eq!(previews(&entries), ["old", "new"]);
-    assert!(entries[0].pinned);
+    assert!(entries[0].pin.is_pinned());
 }
 
 #[test]
@@ -119,11 +131,10 @@ fn slot_assignment_moves_slot_and_pins() {
     let slot = PinSlot::new(1).unwrap();
 
     store.set_slot(a, Some(slot)).unwrap();
-    assert!(store.get(a).unwrap().pinned);
+    assert_eq!(store.get(a).unwrap().pin, Pin::Slot(slot));
     store.set_slot(b, Some(slot)).unwrap();
     assert_eq!(store.by_slot(slot).unwrap().map(|e| e.id), Some(b));
-    assert_eq!(store.get(a).unwrap().slot, None);
-    assert!(store.get(a).unwrap().pinned);
+    assert_eq!(store.get(a).unwrap().pin, Pin::Pinned);
 
     store.set_pinned(b, false).unwrap();
     assert_eq!(store.by_slot(slot).unwrap(), None);
@@ -136,24 +147,70 @@ fn invalid_slot_is_rejected() {
 }
 
 #[test]
-fn search_finds_substrings_case_insensitive() {
+fn long_query_matches_substrings_case_insensitively() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    store.insert(text("Hello World")).unwrap();
+    store.insert(text("another entry")).unwrap();
+
+    assert_eq!(
+        previews(&store.search("wor", Filter::All, 10).unwrap()),
+        ["Hello World"]
+    );
+    assert_eq!(
+        previews(&store.search("O WOR", Filter::All, 10).unwrap()),
+        ["Hello World"]
+    );
+    assert!(store.search("missing", Filter::All, 10).unwrap().is_empty());
+}
+
+#[test]
+fn short_query_scans_previews_literally() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(dir.path(), 100);
     store.insert(text("Hello World")).unwrap();
     store.insert(text("100% done")).unwrap();
-    store.insert(text("say \"quoted\" text")).unwrap();
     store.insert(text("a_b")).unwrap();
 
-    assert_eq!(previews(&store.search("wor", 10).unwrap()), ["Hello World"]);
-    assert_eq!(previews(&store.search("lo", 10).unwrap()), ["Hello World"]);
-    assert_eq!(previews(&store.search("0%", 10).unwrap()), ["100% done"]);
-    assert_eq!(previews(&store.search("_", 10).unwrap()), ["a_b"]);
     assert_eq!(
-        previews(&store.search("\"quoted\"", 10).unwrap()),
+        previews(&store.search("lo", Filter::All, 10).unwrap()),
+        ["Hello World"]
+    );
+    assert_eq!(
+        previews(&store.search("0%", Filter::All, 10).unwrap()),
+        ["100% done"]
+    );
+    assert_eq!(
+        previews(&store.search("_", Filter::All, 10).unwrap()),
+        ["a_b"]
+    );
+}
+
+#[test]
+fn quotes_in_query_are_escaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    store.insert(text("say \"quoted\" text")).unwrap();
+    store.insert(text("plain text")).unwrap();
+
+    assert_eq!(
+        previews(&store.search("\"quoted\"", Filter::All, 10).unwrap()),
         ["say \"quoted\" text"]
     );
-    assert!(store.search("missing", 10).unwrap().is_empty());
-    assert_eq!(store.search("  ", 10).unwrap().len(), 4);
+}
+
+#[test]
+fn blank_query_lists_recent_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    for s in ["a", "b", "c"] {
+        store.insert(text(s)).unwrap();
+    }
+    assert_eq!(
+        previews(&store.search("  ", Filter::All, 10).unwrap()),
+        ["c", "b", "a"]
+    );
+    assert_eq!(store.search("", Filter::All, 2).unwrap().len(), 2);
 }
 
 #[test]
@@ -168,16 +225,19 @@ fn deleted_and_cleared_entries_leave_search() {
     store.delete(a).unwrap();
     assert!(matches!(store.delete(a), Err(Error::NotFound(_))));
     assert_eq!(
-        previews(&store.search("alp", 10).unwrap()),
+        previews(&store.search("alp", Filter::All, 10).unwrap()),
         ["alpine", "alps"]
     );
 
     assert_eq!(store.clear_history().unwrap(), 1);
-    assert_eq!(previews(&store.search("alp", 10).unwrap()), ["alpine"]);
+    assert_eq!(
+        previews(&store.search("alp", Filter::All, 10).unwrap()),
+        ["alpine"]
+    );
 }
 
 #[test]
-fn image_and_files_entries() {
+fn image_and_file_list_entries_get_kind_and_preview() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(dir.path(), 100);
     let image = store
@@ -201,7 +261,7 @@ fn image_and_files_entries() {
     assert_eq!(store.get(files).unwrap().kind, FormatKind::Files);
     assert_eq!(store.get(files).unwrap().preview, "report.pdf");
     assert_eq!(
-        previews(&store.search("report", 10).unwrap()),
+        previews(&store.search("report", Filter::All, 10).unwrap()),
         ["report.pdf"]
     );
 }
@@ -260,16 +320,6 @@ fn nothing_is_stored_in_plaintext() {
 }
 
 #[test]
-fn zero_history_limit_keeps_latest_entry() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = open(dir.path(), 0);
-    store.insert(text("a")).unwrap();
-    let b = store.insert(text("b")).unwrap();
-    assert_eq!(store.get(b).unwrap().preview, "b");
-    assert_eq!(previews(&store.recent(10, 0).unwrap()), ["b"]);
-}
-
-#[test]
 fn recopy_of_pruned_entry_is_inserted_again() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(dir.path(), 1);
@@ -302,8 +352,14 @@ fn short_queries_fold_unicode_case() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = open(dir.path(), 100);
     store.insert(text("Привет мир")).unwrap();
-    assert_eq!(previews(&store.search("пр", 10).unwrap()), ["Привет мир"]);
-    assert_eq!(previews(&store.search("ПРИ", 10).unwrap()), ["Привет мир"]);
+    assert_eq!(
+        previews(&store.search("пр", Filter::All, 10).unwrap()),
+        ["Привет мир"]
+    );
+    assert_eq!(
+        previews(&store.search("ПРИ", Filter::All, 10).unwrap()),
+        ["Привет мир"]
+    );
 }
 
 #[test]
@@ -318,9 +374,239 @@ fn unencrypted_file_is_rejected() {
 }
 
 #[test]
+fn use_seq_lookup_is_served_by_index() {
+    let dir = tempfile::tempdir().unwrap();
+    drop(open(dir.path(), 100));
+    let plan: Vec<String> = raw(dir.path())
+        .prepare("EXPLAIN QUERY PLAN SELECT COALESCE(MAX(use_seq), 0) + 1 FROM entries")
+        .unwrap()
+        .query_map([], |row| row.get(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        plan.iter().any(|step| step.contains("entries_seq")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn negative_stored_size_is_a_conversion_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    let id = store.insert(text("a")).unwrap();
+    raw(dir.path())
+        .execute("UPDATE entries SET size = -1", [])
+        .unwrap();
+    assert!(matches!(store.get(id), Err(Error::Sqlite(_))));
+}
+
+#[test]
 fn key_source_is_zeroized() {
     let mut bytes = [9; Key::LEN];
     let key = Key::from_bytes(&mut bytes);
     assert_eq!(bytes, [0; Key::LEN]);
     assert_eq!(key.as_bytes(), &[9; Key::LEN]);
+}
+
+#[test]
+fn open_with_keys_creates_key_once_and_refuses_lost_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pin.db");
+    let keys = MemoryKeys::default();
+    let mut store = Store::open_with_keys(&path, &keys, options()).unwrap();
+    store.insert(text("hello")).unwrap();
+    drop(store);
+
+    let store = Store::open_with_keys(&path, &keys, options()).unwrap();
+    assert_eq!(store.recent(10, 0).unwrap().len(), 1);
+    drop(store);
+
+    assert!(matches!(
+        Store::open_with_keys(&path, &MemoryKeys::default(), options()),
+        Err(Error::KeyMissing)
+    ));
+}
+
+#[derive(Default)]
+struct SlowKeys {
+    key: Mutex<Option<Vec<u8>>>,
+    saves: Mutex<usize>,
+}
+
+impl KeyStore for SlowKeys {
+    fn load(&self) -> pin_core::Result<Option<Key>> {
+        let stored = self.key.lock().unwrap().clone();
+        std::thread::sleep(Duration::from_millis(50));
+        stored.as_deref().map(Key::try_from).transpose()
+    }
+
+    fn save(&self, key: &Key) -> pin_core::Result<()> {
+        *self.saves.lock().unwrap() += 1;
+        *self.key.lock().unwrap() = Some(key.as_bytes().to_vec());
+        Ok(())
+    }
+}
+
+#[test]
+fn concurrent_first_runs_share_one_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Arc::new(dir.path().join("pin.db"));
+    let keys = Arc::new(SlowKeys::default());
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let (path, keys) = (Arc::clone(&path), Arc::clone(&keys));
+            std::thread::spawn(move || Store::open_with_keys(&*path, &*keys, options()).map(drop))
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+    assert_eq!(*keys.saves.lock().unwrap(), 1);
+}
+
+fn tiny_png(width: u32, height: u32) -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(width, height, image::Rgba([1, 2, 3, 255]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+#[test]
+fn image_entries_get_a_stored_thumbnail_and_size_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 10);
+    let id = store
+        .insert(pin_core::NewEntry {
+            formats: vec![Format::new(FormatKind::Png, tiny_png(640, 320))],
+            source_app: None,
+        })
+        .unwrap();
+    assert_eq!(
+        store.get(id).unwrap().preview,
+        "Image \u{00B7} 640\u{00D7}320"
+    );
+    let thumb = store.thumbnail(id).unwrap().unwrap();
+    assert_eq!((thumb.width, thumb.height), (320, 160));
+    drop(store);
+    let mut store = open(dir.path(), 10);
+    assert_eq!(store.thumbnail(id).unwrap().unwrap().width, 320);
+}
+
+#[test]
+fn text_entries_have_no_thumbnail() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 10);
+    let id = store
+        .insert(pin_core::NewEntry {
+            formats: vec![Format::new(FormatKind::Text, "hello")],
+            source_app: None,
+        })
+        .unwrap();
+    assert!(store.thumbnail(id).unwrap().is_none());
+}
+
+#[test]
+fn filters_in_sql_agree_with_filter_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    let png = || Format::new(FormatKind::Png, [0x89u8, b'P', b'N', b'G']);
+    let entries = [
+        vec![Format::new(FormatKind::Text, "plain words")],
+        vec![Format::new(FormatKind::Text, "https://example.com/a")],
+        vec![Format::new(FormatKind::Text, "HTTP://EXAMPLE.COM")],
+        vec![Format::new(FormatKind::Text, "see https://example.com")],
+        vec![Format::new(FormatKind::Html, "<b>rich</b>")],
+        vec![Format::new(FormatKind::Rtf, "{\\rtf1 rich}")],
+        vec![png()],
+        vec![Format::new(FormatKind::Files, "file:///tmp/a.txt\n")],
+    ];
+    let mut ids = Vec::new();
+    for formats in entries {
+        ids.push(
+            store
+                .insert(NewEntry {
+                    formats,
+                    source_app: None,
+                })
+                .unwrap(),
+        );
+    }
+    store.set_pinned(ids[0], true).unwrap();
+    store
+        .set_slot(ids[6], Some(PinSlot::new(2).unwrap()))
+        .unwrap();
+    let all = store.recent(100, 0).unwrap();
+    for filter in Filter::ALL {
+        let mut expected: Vec<_> = all
+            .iter()
+            .filter(|e| filter.matches(e))
+            .map(|e| e.id)
+            .collect();
+        let mut listed: Vec<_> = store
+            .search("", filter, 100)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        expected.sort();
+        listed.sort();
+        assert_eq!(listed, expected, "{filter:?}");
+    }
+    assert_eq!(store.search("", Filter::Links, 100).unwrap().len(), 2);
+    assert_eq!(store.search("", Filter::Pinned, 100).unwrap().len(), 2);
+    assert_eq!(
+        previews(&store.search("exam", Filter::Links, 100).unwrap()),
+        ["HTTP://EXAMPLE.COM", "https://example.com/a"]
+    );
+    assert_eq!(store.search("http", Filter::Text, 100).unwrap().len(), 3);
+    assert!(
+        store
+            .search("http", Filter::Images, 100)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn details_load_text_and_paths_but_not_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path(), 100);
+    let long = "я".repeat(20_000);
+    let text = store
+        .insert(NewEntry {
+            formats: vec![
+                Format::new(FormatKind::Text, long.as_str()),
+                Format::new(FormatKind::Html, "<p>x</p>"),
+            ],
+            source_app: None,
+        })
+        .unwrap();
+    let files = store
+        .insert(NewEntry {
+            formats: vec![
+                Format::new(
+                    FormatKind::Files,
+                    "file:///tmp/my%20a.txt\r\nfile:///tmp/dir/\r\n",
+                ),
+                Format::new(FormatKind::Png, [0x89u8, b'P', b'N', b'G']),
+            ],
+            source_app: None,
+        })
+        .unwrap();
+
+    let details = store.details(text).unwrap();
+    assert_eq!(details.formats, [FormatKind::Html, FormatKind::Text]);
+    let shown = details.text.unwrap();
+    assert!(shown.len() <= 16 * 1024 && shown.len() > 16 * 1024 - 2);
+    assert!(shown.chars().all(|c| c == 'я'));
+    assert!(details.files.is_empty());
+
+    let details = store.details(files).unwrap();
+    assert_eq!(details.formats, [FormatKind::Png, FormatKind::Files]);
+    assert_eq!(details.files, ["/tmp/my a.txt", "/tmp/dir/"]);
+    assert!(details.text.is_none());
+
+    store.delete(files).unwrap();
+    assert!(matches!(store.details(files), Err(Error::NotFound(_))));
 }

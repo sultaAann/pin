@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 pin-core.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

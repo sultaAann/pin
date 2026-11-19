@@ -1,11 +1,21 @@
+use std::borrow::Cow;
+
+use zeroize::Zeroize;
+
 use crate::model::{Format, FormatKind};
 
 const PREVIEW_CHARS: usize = 200;
-const MAX_INDEXED_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_INDEXED_BYTES: usize = 64 * 1024;
 
 pub(crate) fn normalize(mut formats: Vec<Format>) -> Vec<Format> {
     formats.sort_by(|a, b| a.kind.cmp(&b.kind));
-    formats.dedup_by(|a, b| a.kind == b.kind);
+    formats.dedup_by(|dropped, kept| {
+        let duplicate = dropped.kind == kept.kind;
+        if duplicate {
+            dropped.data.zeroize();
+        }
+        duplicate
+    });
     formats
 }
 
@@ -13,18 +23,22 @@ pub(crate) fn hash(formats: &[Format]) -> blake3::Hash {
     let mut hasher = blake3::Hasher::new();
     for format in formats {
         let kind = format.kind.as_str().as_bytes();
-        hasher.update(&(kind.len() as u64).to_le_bytes());
+        hasher.update(&len_u64(kind.len()).to_le_bytes());
         hasher.update(kind);
-        hasher.update(&(format.data.len() as u64).to_le_bytes());
+        hasher.update(&len_u64(format.data.len()).to_le_bytes());
         hasher.update(&format.data);
     }
     hasher.finalize()
 }
 
+fn len_u64(len: usize) -> u64 {
+    u64::try_from(len).unwrap_or(u64::MAX)
+}
+
 pub(crate) fn primary_kind(formats: &[Format]) -> FormatKind {
     const PRIORITY: [FormatKind; 5] = [
-        FormatKind::Files,
         FormatKind::Png,
+        FormatKind::Files,
         FormatKind::Text,
         FormatKind::Html,
         FormatKind::Rtf,
@@ -36,31 +50,59 @@ pub(crate) fn primary_kind(formats: &[Format]) -> FormatKind {
         .unwrap_or(FormatKind::Text)
 }
 
-pub(crate) fn search_text(formats: &[Format]) -> Option<String> {
-    let text = if let Some(text) = find(formats, &FormatKind::Text) {
-        String::from_utf8_lossy(truncate_bytes(text, MAX_INDEXED_BYTES)).into_owned()
-    } else {
-        files_text(find(formats, &FormatKind::Files)?)
+pub(crate) fn search_text(formats: &[Format]) -> Option<Cow<'_, str>> {
+    let text = match find(formats, &FormatKind::Text) {
+        Some(text) => String::from_utf8_lossy(truncate_bytes(text, MAX_INDEXED_BYTES)),
+        None => Cow::Owned(files_text(find(formats, &FormatKind::Files)?)),
     };
     (!text.trim().is_empty()).then_some(text)
 }
 
 fn files_text(data: &[u8]) -> String {
-    let list = String::from_utf8_lossy(data);
-    file_uris(&list)
+    file_paths(data).join("\n")
+}
+
+/// Decoded paths of a `text/uri-list`, reading at most the first 64 KiB; a path cut by that
+/// limit is dropped rather than shown as a different file.
+pub(crate) fn file_paths(data: &[u8]) -> Vec<String> {
+    let cut = data.len() > MAX_INDEXED_BYTES;
+    let list = String::from_utf8_lossy(truncate_bytes(data, MAX_INDEXED_BYTES));
+    let list = match list.rfind('\n') {
+        Some(end) if cut => &list[..end],
+        _ if cut => "",
+        _ => &list,
+    };
+    file_uris(list)
         .map(|uri| percent_decode(uri.strip_prefix("file://").unwrap_or(uri)))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
+}
+
+/// Text cut to at most `max` bytes on a char boundary.
+pub(crate) fn display_text(data: &[u8], max: usize) -> String {
+    String::from_utf8_lossy(truncate_bytes(data, max)).into_owned()
+}
+
+fn into_string_lossy(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 pub(crate) fn preview(formats: &[Format], kind: &FormatKind) -> String {
     match kind {
-        FormatKind::Png => "Image".to_owned(),
+        FormatKind::Png => {
+            let name =
+                find(formats, &FormatKind::Files).map_or_else(|| "Image".to_owned(), files_preview);
+            match find(formats, kind).and_then(crate::thumbnail::png_size) {
+                Some((w, h)) => format!("{name} \u{00B7} {w}\u{00D7}{h}"),
+                None => name,
+            }
+        }
         FormatKind::Files => files_preview(find(formats, kind).unwrap_or_default()),
-        _ => find(formats, &FormatKind::Text)
-            .map(text_preview)
-            .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| kind.as_str().to_owned()),
+        FormatKind::Text | FormatKind::Html | FormatKind::Rtf | FormatKind::Other(_) => {
+            find(formats, &FormatKind::Text)
+                .map(text_preview)
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| kind.as_str().to_owned())
+        }
     }
 }
 
@@ -112,6 +154,8 @@ fn files_preview(data: &[u8]) -> String {
         .unwrap_or(first);
     let name = percent_decode(name);
     match files.count() {
+        // A trailing slash tells the list a lone folder from a lone file without loading paths.
+        0 if first.ends_with('/') => format!("{name}/"),
         0 => name,
         rest => format!("{name} (+{rest})"),
     }
@@ -124,8 +168,13 @@ fn file_uris(list: &str) -> impl Iterator<Item = &str> {
 }
 
 fn percent_decode(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    percent_decode_into(&mut out, s);
+    into_string_lossy(out)
+}
+
+fn percent_decode_into(out: &mut Vec<u8>, s: &str) {
     let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         let hex = bytes
@@ -143,11 +192,12 @@ fn percent_decode(s: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -182,6 +232,7 @@ mod tests {
     fn files_preview_shows_first_name_and_count() {
         let list = b"file:///tmp/a.txt\r\nfile:///tmp/dir/\r\nfile:///tmp/c.png\r\n";
         assert_eq!(files_preview(list), "a.txt (+2)");
+        assert_eq!(files_preview(b"file:///tmp/my%20dir/\r\n"), "my dir/");
     }
 
     #[test]
@@ -196,6 +247,17 @@ mod tests {
         );
         assert_eq!(files_preview(&formats[0].data), "my reportы.pdf");
         assert_eq!(percent_decode("100%"), "100%");
+    }
+
+    #[test]
+    fn file_list_cut_by_limit_drops_partial_path() {
+        let line = "file:///tmp/a.txt\n";
+        let full = line.repeat(MAX_INDEXED_BYTES / line.len());
+        let long = format!("{full}file:///tmp/partial-name-that-goes-past-the-limit.txt\n");
+        let paths = file_paths(long.as_bytes());
+        assert_eq!(paths.len(), MAX_INDEXED_BYTES / line.len());
+        assert!(paths.iter().all(|p| p == "/tmp/a.txt"));
+        assert_eq!(file_paths(b"file:///tmp/b.txt"), ["/tmp/b.txt"]);
     }
 
     #[test]
@@ -220,5 +282,31 @@ mod tests {
             Format::new(FormatKind::Png, [0u8]),
         ];
         assert_eq!(primary_kind(&formats), FormatKind::Png);
+    }
+
+    proptest! {
+        #[test]
+        fn truncate_bytes_keeps_valid_utf8_within_limit(s in ".*", max in 0usize..64) {
+            let cut = truncate_bytes(s.as_bytes(), max);
+            prop_assert!(cut.len() <= max);
+            prop_assert!(std::str::from_utf8(cut).is_ok());
+        }
+
+        #[test]
+        fn text_preview_is_bounded_and_trimmed(data in proptest::collection::vec(any::<u8>(), 0..2048)) {
+            let preview = text_preview(&data);
+            prop_assert!(preview.chars().count() <= PREVIEW_CHARS);
+            prop_assert!(!preview.starts_with(char::is_whitespace));
+        }
+
+        #[test]
+        fn percent_decode_never_panics(s in ".*") {
+            let _ = percent_decode(&s);
+        }
+
+        #[test]
+        fn files_text_never_panics(data in proptest::collection::vec(any::<u8>(), 0..512)) {
+            let _ = files_text(&data);
+        }
     }
 }

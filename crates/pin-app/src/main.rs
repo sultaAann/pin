@@ -1,21 +1,45 @@
-use eframe::egui;
+#![forbid(unsafe_code)]
 
-fn main() -> eframe::Result {
+mod app;
+mod events;
+mod hotkeys;
+mod platform;
+mod view;
+
+use eframe::egui;
+use tracing_subscriber::filter::LevelFilter;
+
+fn main() -> anyhow::Result<()> {
+    init_logging();
+    let store = app::open_store()?;
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([420.0, 560.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Pin")
+            .with_inner_size(view::WINDOW_SIZE)
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_has_shadow(true)
+            .with_resizable(false)
+            .with_always_on_top(),
+        centered: true,
+        event_loop_builder: platform::event_loop_builder(),
         ..Default::default()
     };
-    eframe::run_native("Pin", options, Box::new(|_cc| Ok(Box::<App>::default())))
+    eframe::run_native(
+        "Pin",
+        options,
+        Box::new(|cc| Ok(Box::new(app::App::new(cc, store)))),
+    )
+    .map_err(|err| anyhow::anyhow!("ui failed: {err}"))
 }
 
-#[derive(Default)]
-struct App;
-
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Pin");
-            ui.label(format!("v{}", pin_core::version()));
-        });
-    }
+fn init_logging() {
+    let level = std::env::var("PIN_LOG")
+        .ok()
+        .and_then(|v| v.parse::<LevelFilter>().ok())
+        .unwrap_or(LevelFilter::WARN);
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_writer(std::io::stderr)
+        .init();
 }
