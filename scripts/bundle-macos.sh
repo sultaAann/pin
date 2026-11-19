@@ -16,7 +16,8 @@ for target in $targets; do
 done
 
 rm -rf dist
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp packaging/macos/Pin.icns "$app/Contents/Resources/Pin.icns"
 # shellcheck disable=SC2086 # one path per target
 lipo -create -output "$app/Contents/MacOS/Pin" $binaries
 sed "s/@VERSION@/$version/g" packaging/macos/Info.plist >"$app/Contents/Info.plist"

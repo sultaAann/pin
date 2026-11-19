@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- macOS app icon grid: an 824 px tile centred on a 1024 px canvas, room left for the shadow. -->
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="1.2" stdDeviation="1.6" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <g transform="translate(100 100) scale(8.24)">
+    <rect width="100" height="100" rx="22.4" fill="#2A2B30" filter="url(#shadow)"/>
+    <rect x="14" y="16" width="72" height="70" rx="15" fill="#C9CBD3"/>
+    <rect x="19" y="18" width="62" height="58" rx="11" fill="#F7F7F9"/>
+    <g fill="none" stroke="#1C1C1E" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M30.25 41.2V60"/>
+      <circle cx="36.45" cy="47.6" r="6.2"/>
+      <path d="M46.25 41.4H50.25V54M45.75 54H54.75"/>
+      <path d="M59.75 41.2V54M59.75 46.6C59.75 43.2 62.05 41.2 64.75 41.2S69.75 43.2 69.75 46.6V54"/>
+    </g>
+    <circle cx="50.25" cy="35.2" r="2.4" fill="#1C1C1E"/>
+  </g>
+</svg>
