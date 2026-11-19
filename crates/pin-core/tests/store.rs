@@ -428,6 +428,33 @@ fn open_with_keys_creates_key_once_and_refuses_lost_key() {
     ));
 }
 
+#[test]
+fn load_key_gives_one_key_for_several_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pin.db");
+    let keys = MemoryKeys::default();
+    let key = Store::load_key(&path, &keys).unwrap();
+    let mut first = Store::open(&path, &key, options()).unwrap();
+    first.insert(text("hello")).unwrap();
+    let second = Store::open(&path, &key, options()).unwrap();
+    assert_eq!(second.recent(10, 0).unwrap().len(), 1);
+    drop((first, second, key));
+
+    let again = Store::load_key(&path, &keys).unwrap();
+    assert_eq!(
+        Store::open(&path, &again, options())
+            .unwrap()
+            .recent(10, 0)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(matches!(
+        Store::load_key(&path, &MemoryKeys::default()),
+        Err(Error::KeyMissing)
+    ));
+}
+
 #[derive(Default)]
 struct SlowKeys {
     key: Mutex<Option<Vec<u8>>>,
