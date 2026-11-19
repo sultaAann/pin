@@ -413,6 +413,11 @@ impl App {
                                 .size(15.0)
                                 .color(palette.secondary),
                             |ui| {
+                                if let Some(chosen) = self.login_item(ui) {
+                                    command = Some(chosen);
+                                    ui.close();
+                                }
+                                ui.separator();
                                 if ui
                                     .add(
                                         egui::Button::new("Quit Pin")
@@ -475,6 +480,18 @@ impl App {
             },
         );
         command
+    }
+
+    /// The Launch at Login menu item; disabled in builds that can't be started at login.
+    fn login_item(&self, ui: &mut egui::Ui) -> Option<Command> {
+        let on = self.launch_at_login.unwrap_or(false);
+        let item = ui
+            .add_enabled(
+                self.launch_at_login.is_some(),
+                egui::Button::selectable(on, "Launch at Login"),
+            )
+            .on_disabled_hover_text("Available in the installed Pin app.");
+        item.clicked().then_some(Command::SetLaunchAtLogin(!on))
     }
 
     fn count_label(&self) -> String {

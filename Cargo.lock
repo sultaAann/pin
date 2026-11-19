@@ -3138,6 +3138,7 @@ name = "pin-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "directories",
  "eframe",
  "egui",
  "global-hotkey",

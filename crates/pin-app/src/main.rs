@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod autostart;
 mod events;
 mod hotkeys;
 mod platform;
@@ -12,9 +13,11 @@ use tracing_subscriber::filter::LevelFilter;
 fn main() -> anyhow::Result<()> {
     init_logging();
     let store = app::open_store()?;
+    let background = std::env::args().any(|arg| arg == autostart::BACKGROUND_ARG);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Pin")
+            .with_visible(!background)
             .with_inner_size(view::WINDOW_SIZE)
             .with_decorations(false)
             .with_transparent(true)
@@ -28,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "Pin",
         options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc, store)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, store, background)))),
     )
     .map_err(|err| anyhow::anyhow!("ui failed: {err}"))
 }
