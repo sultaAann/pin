@@ -43,6 +43,7 @@ pub enum Command {
     EditSecret(SecretId),
     DeleteSecret(SecretId),
     LockSecrets,
+    SetLaunchAtLogin(bool),
     Sheet(SheetAction),
     Hide,
     Quit,
@@ -94,13 +95,16 @@ pub struct App {
     thumbs: thumbs::Thumbnails,
     window: Window,
     reopen: Reopen,
+    /// Whether pin starts at login; `None` when this copy can't, e.g. a build from source.
+    pub(crate) launch_at_login: Option<bool>,
     quitting: bool,
     _hotkeys: Option<Hotkeys>,
     watch: Option<WatchHandle>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, store: Store) -> Self {
+    /// `background`: started at login, so the window stays hidden until the hotkey.
+    pub fn new(cc: &eframe::CreationContext<'_>, store: Store, background: bool) -> Self {
         crate::view::install(&cc.egui_ctx);
         place_window(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
@@ -123,6 +127,18 @@ impl App {
         } else {
             platform::show_in_dock();
             Reopen::Dock
+        };
+        crate::autostart::refresh();
+        let launch_at_login = crate::autostart::available().then(crate::autostart::enabled);
+        // Without a working hotkey a hidden window could never be opened.
+        let window = if background && reopen == Reopen::Hotkey {
+            Window::Hidden
+        } else {
+            if background {
+                cc.egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            }
+            Window::Shown { had_focus: false }
         };
         let clipboard = Clipboard::general()
             .inspect_err(|err| tracing::warn!(%err, "copying back disabled"))
@@ -153,7 +169,8 @@ impl App {
             forget_text_state: false,
             thumbs,
             reopen,
-            window: Window::Shown { had_focus: false },
+            launch_at_login,
+            window,
             quitting: false,
             _hotkeys: hotkeys,
             watch,
@@ -237,6 +254,9 @@ impl App {
                 self.lock_now();
                 Ok(())
             }
+            Command::SetLaunchAtLogin(on) => crate::autostart::set(on)
+                .map(|()| self.launch_at_login = Some(crate::autostart::enabled()))
+                .map_err(Into::into),
             Command::Sheet(action) => {
                 self.sheet_action(action);
                 Ok(())

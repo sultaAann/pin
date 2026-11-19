@@ -58,6 +58,7 @@ fn app(dir: &std::path::Path) -> App {
         thumbs: thumbs::Thumbnails::default(),
         window: Window::Shown { had_focus: true },
         reopen: Reopen::Hotkey,
+        launch_at_login: None,
         quitting: false,
         _hotkeys: None,
         watch: None,
