@@ -16,7 +16,7 @@ jobs:
     env:
       # Optional: a code signing certificate keeps the app's identity the same across releases,
       # so macOS doesn't ask for the keychain password again after each update. Without it the
-      # app is signed ad hoc. See "Release signing" in README.md.
+      # app is signed ad hoc. See docs/releasing.md.
       MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
       MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
       MACOS_CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
