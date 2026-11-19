@@ -6,13 +6,14 @@ mod vault;
 #[cfg(test)]
 mod tests;
 
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use anyhow::Context as _;
 use eframe::egui;
 use pin_clipboard::{Clipboard, DEFAULT_INTERVAL, Privacy, WatchHandle};
 use pin_core::{
-    Entry, EntryId, Filter, Keychain, Options, PinSlot, Secret, SecretId, Store, VaultStatus,
+    Entry, EntryId, Filter, Key, Keychain, Options, PinSlot, Secret, SecretId, Store, VaultStatus,
 };
 
 pub use self::actions::{Actions, EntryAction, Item, Page, Target, entry_items, secret_items};
@@ -26,10 +27,20 @@ pub use self::vault::{LabelTarget, PREFIX, Revealed, Sheet, SheetAction};
 
 const LIST_LIMIT: usize = 200;
 
-pub fn open_store() -> anyhow::Result<Store> {
+/// The database and its key. The key is read from the keychain only here, so macOS asks at
+/// most once per launch; the thumbnail worker opens its connection with the same key.
+pub struct Database {
+    pub store: Store,
+    key: Key,
+    path: PathBuf,
+}
+
+pub fn open_database() -> anyhow::Result<Database> {
     let path = pin_core::default_database_path().context("locate history database")?;
     let keychain = Keychain::new(Keychain::DATABASE_ACCOUNT).context("open keychain")?;
-    Store::open_with_keys(&path, &keychain, Options::default()).context("open history database")
+    let key = Store::load_key(&path, &keychain).context("read the database key")?;
+    let store = Store::open(&path, &key, Options::default()).context("open history database")?;
+    Ok(Database { store, key, path })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +115,8 @@ pub struct App {
 
 impl App {
     /// `background`: started at login, so the window stays hidden until the hotkey.
-    pub fn new(cc: &eframe::CreationContext<'_>, store: Store, background: bool) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, database: Database, background: bool) -> Self {
+        let Database { store, key, path } = database;
         crate::view::install(&cc.egui_ctx);
         place_window(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
@@ -118,7 +130,11 @@ impl App {
         let watch = watch
             .inspect_err(|err| tracing::warn!(%err, "clipboard history disabled"))
             .ok();
-        let thumbs = thumbs::Thumbnails::spawn(events.clone());
+        let thumbs = thumbs::Thumbnails::spawn(events.clone(), path, key);
+        {
+            let events = events.clone();
+            platform::watch_activation(move || events.send(Event::Activated));
+        }
         let hotkeys = Hotkeys::register(events)
             .inspect_err(|err| tracing::warn!(%err, "global hotkeys disabled"))
             .ok();
@@ -307,6 +323,8 @@ impl App {
                 }
             }
             Event::Thumbnail(id, thumb) => self.thumbnail_ready(ctx, id, thumb),
+            Event::Activated if self.window == Window::Hidden => self.show(ctx),
+            Event::Activated => {}
             Event::Hotkey(Action::Toggle) => match self.window {
                 Window::Hidden => self.show(ctx),
                 Window::Shown { had_focus: false } => {

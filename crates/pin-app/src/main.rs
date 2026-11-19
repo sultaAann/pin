@@ -12,7 +12,7 @@ use tracing_subscriber::filter::LevelFilter;
 
 fn main() -> anyhow::Result<()> {
     init_logging();
-    let store = app::open_store()?;
+    let database = app::open_database()?;
     let background = std::env::args().any(|arg| arg == autostart::BACKGROUND_ARG);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "Pin",
         options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, store, background)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, database, background)))),
     )
     .map_err(|err| anyhow::anyhow!("ui failed: {err}"))
 }

@@ -8,6 +8,8 @@ use crate::hotkeys::Action;
 pub enum Event {
     Captured(NewEntry),
     Hotkey(Action),
+    /// The app became active from outside, e.g. a click on its Dock icon or opening it again.
+    Activated,
     Thumbnail(EntryId, Option<Thumbnail>),
 }
 

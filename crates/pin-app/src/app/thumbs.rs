@@ -3,7 +3,9 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
-use pin_core::{EntryId, Thumbnail};
+use std::path::PathBuf;
+
+use pin_core::{EntryId, Key, Options, Store, Thumbnail};
 
 use super::App;
 use crate::events::{Event, Events};
@@ -23,12 +25,14 @@ pub(crate) struct Thumbnails {
 }
 
 impl Thumbnails {
-    pub(super) fn spawn(events: Events) -> Self {
+    pub(super) fn spawn(events: Events, path: PathBuf, key: Key) -> Self {
         let (tx, rx) = mpsc::channel::<EntryId>();
         let worker = thread::Builder::new()
             .name("pin-thumbnails".into())
             .spawn(move || {
-                let mut store = match super::open_store() {
+                let opened = Store::open(&path, &key, Options::default());
+                drop(key);
+                let mut store = match opened {
                     Ok(store) => store,
                     Err(err) => {
                         tracing::warn!(%err, "thumbnails disabled");

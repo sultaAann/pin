@@ -8,7 +8,7 @@
 
 Everything you copy, one keystroke away — encrypted, searchable, yours.
 
-[Download for macOS](https://github.com/sultaAann/pin/releases/latest) ·
+[Download Pin.zip](https://github.com/sultaAann/pin/releases/latest/download/Pin.zip) ·
 [Install](#install) ·
 [Shortcuts](#shortcuts) ·
 [Build from source](#build-from-source)
@@ -33,8 +33,10 @@ Everything you copy, one keystroke away — encrypted, searchable, yours.
 
 ## Install
 
-1. Download **Pin.zip** from the [latest release](https://github.com/sultaAann/pin/releases/latest),
-   unzip it and move **Pin.app** to **Applications**.
+1. Download **[Pin.zip](https://github.com/sultaAann/pin/releases/latest/download/Pin.zip)**,
+   unzip it and move **Pin.app** to **Applications**. On the
+   [release page](https://github.com/sultaAann/pin/releases/latest) it is under **Assets**;
+   the **Source code** archives there are the project's code, not the app.
 2. Open Pin. It isn't notarized by Apple yet, so macOS blocks it the first time. Click
    **Open Anyway** in **System Settings → Privacy & Security**, or run once:
 

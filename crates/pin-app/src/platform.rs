@@ -38,6 +38,30 @@ mod imp {
         }
     }
 
+    /// Calls `on_activate` each time pin becomes the active app. winit reports no activation
+    /// without a visible window, and a click on the Dock icon of a running accessory app only
+    /// activates it, so a cheap check of the active flag stands in for the missing event.
+    pub fn watch_activation(on_activate: impl Fn() + Send + 'static) {
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(300);
+        let spawned = std::thread::Builder::new()
+            .name("pin-activation".into())
+            .spawn(move || {
+                let app = objc2_app_kit::NSRunningApplication::currentApplication();
+                let mut was_active = app.isActive();
+                loop {
+                    std::thread::sleep(EVERY);
+                    let active = app.isActive();
+                    if active && !was_active {
+                        on_activate();
+                    }
+                    was_active = active;
+                }
+            });
+        if let Err(err) = spawned {
+            tracing::warn!(%err, "Dock clicks won't open the window");
+        }
+    }
+
     /// Top-left point that puts a window of `size` in the upper part of the screen the user is working on.
     #[expect(
         clippy::cast_possible_truncation,
@@ -71,9 +95,13 @@ mod imp {
 
     pub fn reveal() {}
 
+    pub fn watch_activation(_on_activate: impl Fn() + Send + 'static) {}
+
     pub fn popup_origin(_size: Vec2) -> Option<Pos2> {
         None
     }
 }
 
-pub use imp::{event_loop_builder, popup_origin, reveal, show_in_dock, yield_focus};
+pub use imp::{
+    event_loop_builder, popup_origin, reveal, show_in_dock, watch_activation, yield_focus,
+};

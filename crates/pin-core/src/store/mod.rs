@@ -74,15 +74,18 @@ impl Store {
         options: Options,
     ) -> Result<Self> {
         let path = path.as_ref();
-        let lock = File::options()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(lock_path(path))
-            .map_err(Error::Lock)?;
-        lock.lock().map_err(Error::Lock)?;
+        let _lock = lock_database(path)?;
         let key = keychain::load_or_create(keys, path.try_exists()?)?;
         Self::open(path, &key, options)
+    }
+
+    /// The database key from `keys`, created when the database is new. A process that opens
+    /// several connections reads it once with this and passes it to [`Store::open`]: on macOS
+    /// every keychain read by an app the user hasn't always-allowed asks for their password.
+    pub fn load_key(path: impl AsRef<Path>, keys: &impl KeyStore) -> Result<Key> {
+        let path = path.as_ref();
+        let _lock = lock_database(path)?;
+        keychain::load_or_create(keys, path.try_exists()?)
     }
 
     pub fn open(path: impl AsRef<Path>, key: &Key, options: Options) -> Result<Self> {
@@ -181,6 +184,17 @@ pub(crate) fn checkpoint(conn: &Connection) {
     if let Err(e) = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(())) {
         tracing::warn!(code = ?e.sqlite_error_code(), "wal checkpoint failed");
     }
+}
+
+fn lock_database(path: &Path) -> Result<File> {
+    let lock = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path(path))
+        .map_err(Error::Lock)?;
+    lock.lock().map_err(Error::Lock)?;
+    Ok(lock)
 }
 
 fn lock_path(path: &Path) -> PathBuf {
