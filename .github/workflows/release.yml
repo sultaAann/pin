@@ -23,8 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      # rust-toolchain.toml picks the toolchain cargo uses, so the targets go to that one.
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
 
       - name: Import signing certificate
